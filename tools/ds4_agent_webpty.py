@@ -1136,7 +1136,7 @@ def main() -> int:
             "--model",
             str(ds4_root / "ds4flash.gguf"),
             "--system",
-            "You are running through a small web PTY. The user's default code workspace is /Users/mac/webkitium. Use absolute paths for repository files unless the user says otherwise.",
+            "You are running through a small web PTY. The user's default code workspace is /Users/mac/pinback. Use absolute paths for repository files unless the user says otherwise.",
         ]
 
     kind = profile_kind()

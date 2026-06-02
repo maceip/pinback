@@ -1,12 +1,20 @@
-import { Badge } from "@coss/ui/components/badge";
-import { Button } from "@coss/ui/components/button";
-import { Card } from "@coss/ui/components/card";
 import {
   Mic,
   PlugZap,
   SendHorizontal,
 } from "lucide-react";
-import { Component, useCallback, useMemo, useRef, useState, useEffect, type ErrorInfo, type ReactNode } from "react";
+import {
+  Component,
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  useEffect,
+  type ButtonHTMLAttributes,
+  type ErrorInfo,
+  type HTMLAttributes,
+  type ReactNode,
+} from "react";
 import TextareaAutosize from "react-textarea-autosize";
 import {
   controlAgent,
@@ -55,6 +63,38 @@ type Notice = {
 
 const STORE = "ds4_cockpit_v1_";
 const MAX_MESSAGE_CHARS = 120_000;
+
+function classNames(...parts: Array<string | false | null | undefined>) {
+  return parts.filter(Boolean).join(" ");
+}
+
+type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
+  size?: "xs" | "sm";
+  variant?: "default" | "ghost" | "outline";
+};
+
+function Button({ className = "", size = "sm", type = "button", variant = "default", ...props }: ButtonProps) {
+  return (
+    <button
+      className={classNames("ds4-button", `ds4-button-${variant}`, `ds4-button-${size}`, className)}
+      type={type}
+      {...props}
+    />
+  );
+}
+
+type BadgeProps = HTMLAttributes<HTMLSpanElement> & {
+  size?: "sm";
+  variant?: "outline";
+};
+
+function Badge({ className = "", size = "sm", variant = "outline", ...props }: BadgeProps) {
+  return <span className={classNames("ds4-badge", `ds4-badge-${variant}`, `ds4-badge-${size}`, className)} {...props} />;
+}
+
+function Card({ className = "", ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={classNames("ds4-card", className)} {...props} />;
+}
 
 function makeId(prefix = "m") {
   return `${prefix}${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;

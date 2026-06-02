@@ -1,7 +1,4 @@
-@import "../../../coss-ui/packages/ui/src/styles/globals.css";
-
 @source "./**/*.{ts,tsx}";
-@source "../../../coss-ui/packages/ui/src/**/*.{ts,tsx}";
 
 :root {
   --background: #f4e4d3;
@@ -110,6 +107,77 @@ button,
 textarea,
 select {
   font: inherit;
+}
+
+.ds4-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  border: 1px solid transparent;
+  border-radius: 0.65rem;
+  white-space: nowrap;
+  font-weight: 700;
+  line-height: 1;
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, box-shadow 140ms ease;
+}
+
+.ds4-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.ds4-button-xs {
+  min-height: 1.5rem;
+  padding-inline: 0.5rem;
+}
+
+.ds4-button-sm {
+  min-height: 2rem;
+  padding-inline: 0.75rem;
+}
+
+.ds4-button-default {
+  border-color: color-mix(in srgb, var(--primary) 55%, transparent);
+  background: var(--primary);
+  color: var(--primary-foreground);
+}
+
+.ds4-button-outline {
+  border-color: color-mix(in srgb, var(--border) 78%, transparent);
+  background: color-mix(in srgb, var(--card) 64%, transparent);
+  color: var(--foreground);
+}
+
+.ds4-button-ghost {
+  background: transparent;
+  color: var(--foreground);
+}
+
+.ds4-button:not(:disabled):hover {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--primary) 22%, transparent);
+}
+
+.ds4-badge {
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.ds4-badge-outline {
+  border: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  background: color-mix(in srgb, var(--card) 55%, transparent);
+  color: var(--foreground);
+}
+
+.ds4-card {
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--card) 68%, transparent);
+  color: var(--card-foreground);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(16px) saturate(145%);
+  -webkit-backdrop-filter: blur(16px) saturate(145%);
 }
 
 .ds4-shell {

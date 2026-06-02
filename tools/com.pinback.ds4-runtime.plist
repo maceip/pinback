@@ -4,17 +4,17 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.webkitium.ds4-runtime</string>
+  <string>com.pinback.ds4-runtime</string>
 
   <key>ProgramArguments</key>
   <array>
     <string>/usr/bin/env</string>
     <string>python3</string>
-    <string>/Users/mac/webkitium/tools/ds4_runtime_supervisor.py</string>
+    <string>/Users/mac/pinback/tools/ds4_runtime_supervisor.py</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/mac/webkitium</string>
+  <string>/Users/mac/pinback</string>
 
   <key>RunAtLoad</key>
   <true/>
@@ -23,9 +23,9 @@
   <true/>
 
   <key>StandardOutPath</key>
-  <string>/Users/mac/webkitium/.runtime/ds4-supervisor/launchd.out.log</string>
+  <string>/Users/mac/pinback/.runtime/ds4-supervisor/launchd.out.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/mac/webkitium/.runtime/ds4-supervisor/launchd.err.log</string>
+  <string>/Users/mac/pinback/.runtime/ds4-supervisor/launchd.err.log</string>
 </dict>
 </plist>

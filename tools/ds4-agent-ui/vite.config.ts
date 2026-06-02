@@ -8,7 +8,6 @@ export default defineConfig({
   resolve: {
     dedupe: ["react", "react-dom", "react/jsx-runtime"],
     alias: {
-      "@coss/ui": fileURLToPath(new URL("../../coss-ui/packages/ui/src", import.meta.url)),
       react: fileURLToPath(new URL("./node_modules/react", import.meta.url)),
       "react-dom": fileURLToPath(new URL("./node_modules/react-dom", import.meta.url)),
       "react/jsx-runtime": fileURLToPath(new URL("./node_modules/react/jsx-runtime.js", import.meta.url)),

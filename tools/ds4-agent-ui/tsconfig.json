@@ -15,10 +15,7 @@
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    "baseUrl": ".",
-    "paths": {
-      "@coss/ui/*": ["../../coss-ui/packages/ui/src/*"]
-    }
+    "baseUrl": "."
   },
   "include": ["src"],
   "references": []

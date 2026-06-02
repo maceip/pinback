@@ -1,0 +1,749 @@
+{
+  "agent_slash_commands": [
+    {
+      "name": "/help",
+      "takes_args": false
+    },
+    {
+      "name": "/save",
+      "takes_args": false
+    },
+    {
+      "name": "/compact",
+      "takes_args": false
+    },
+    {
+      "name": "/list",
+      "takes_args": false
+    },
+    {
+      "name": "/quit",
+      "takes_args": false
+    },
+    {
+      "name": "/exit",
+      "takes_args": false
+    },
+    {
+      "name": "/new",
+      "takes_args": false
+    },
+    {
+      "name": "/power",
+      "takes_args": true
+    },
+    {
+      "name": "/switch",
+      "takes_args": true
+    },
+    {
+      "name": "/del",
+      "takes_args": true
+    },
+    {
+      "name": "/strip",
+      "takes_args": true
+    },
+    {
+      "name": "/history",
+      "takes_args": true
+    }
+  ],
+  "agent_tools": [
+    {
+      "args": [
+        "path",
+        "whole",
+        "start_line",
+        "max_lines",
+        "raw"
+      ],
+      "name": "read"
+    },
+    {
+      "args": [
+        "count"
+      ],
+      "name": "more"
+    },
+    {
+      "args": [
+        "path",
+        "content"
+      ],
+      "name": "write"
+    },
+    {
+      "args": [
+        "path"
+      ],
+      "name": "list"
+    },
+    {
+      "args": [
+        "path",
+        "old",
+        "new"
+      ],
+      "name": "edit"
+    },
+    {
+      "args": [
+        "query",
+        "path",
+        "mode",
+        "glob",
+        "case_sensitive",
+        "context",
+        "max_results"
+      ],
+      "name": "search"
+    },
+    {
+      "args": [
+        "query"
+      ],
+      "name": "google_search"
+    },
+    {
+      "args": [
+        "url"
+      ],
+      "name": "visit_page"
+    },
+    {
+      "args": [
+        "command",
+        "timeout_sec",
+        "refresh_sec"
+      ],
+      "name": "bash"
+    },
+    {
+      "args": [
+        "job",
+        "pid",
+        "refresh_sec"
+      ],
+      "name": "bash_status"
+    },
+    {
+      "args": [
+        "job",
+        "pid",
+        "refresh_sec"
+      ],
+      "name": "bash_stop"
+    }
+  ],
+  "browser_cdp_methods": [
+    "Runtime.evaluate",
+    "Page.navigate",
+    "Page.enable",
+    "Runtime.enable",
+    "Emulation.setFocusEmulationEnabled",
+    "Emulation.setDeviceMetricsOverride",
+    "Target.createTarget"
+  ],
+  "cli_flags": {
+    "distributed": [
+      "--role",
+      "--layers",
+      "--listen",
+      "--coordinator",
+      "--dist-prefill-chunk",
+      "--dist-prefill-window",
+      "--dist-activation-bits",
+      "--dist-replay-check",
+      "--debug"
+    ],
+    "ds4": [
+      "-h",
+      "--help",
+      "-p",
+      "--prompt",
+      "--prompt-file",
+      "-sys",
+      "--system",
+      "-m",
+      "--model",
+      "--mtp",
+      "--mtp-draft",
+      "--mtp-margin",
+      "-n",
+      "--tokens",
+      "-c",
+      "--ctx",
+      "--temp",
+      "--top-p",
+      "--min-p",
+      "--seed",
+      "--quality",
+      "--power",
+      "--dir-steering-file",
+      "--dir-steering-ffn",
+      "--dir-steering-attn",
+      "-t",
+      "--threads",
+      "--backend",
+      "--cpu",
+      "--metal",
+      "--cuda",
+      "--dump-tokens",
+      "--dump-logits",
+      "--dump-logprobs",
+      "--logprobs-top-k",
+      "--perplexity-file",
+      "--imatrix-dataset",
+      "--imatrix-out",
+      "--imatrix-max-prompts",
+      "--imatrix-max-tokens",
+      "--think",
+      "--think-max",
+      "--nothink",
+      "--head-test",
+      "--first-token-test",
+      "--metal-graph-test",
+      "--metal-graph-full-test",
+      "--metal-graph-prompt-test",
+      "--metal-graph-generate",
+      "--inspect",
+      "--warm-weights",
+      "--server"
+    ],
+    "ds4-agent": [
+      "-h",
+      "--help",
+      "-p",
+      "--prompt",
+      "--non-interactive",
+      "-sys",
+      "--system",
+      "--trace",
+      "-m",
+      "--model",
+      "--mtp",
+      "--mtp-draft",
+      "--mtp-margin",
+      "-c",
+      "--ctx",
+      "-n",
+      "--tokens",
+      "--temp",
+      "--top-p",
+      "--min-p",
+      "--seed",
+      "--think",
+      "--think-max",
+      "--nothink",
+      "--backend",
+      "--metal",
+      "--cuda",
+      "--cpu",
+      "-t",
+      "--threads",
+      "--chdir",
+      "--quality",
+      "--power",
+      "--warm-weights",
+      "--dir-steering-file",
+      "--dir-steering-ffn",
+      "--dir-steering-attn"
+    ],
+    "ds4-bench": [
+      "-h",
+      "--help",
+      "-m",
+      "--model",
+      "--prompt-file",
+      "--chat-prompt-file",
+      "-sys",
+      "--system",
+      "--ctx-start",
+      "--ctx-max",
+      "--ctx-alloc",
+      "--step-incr",
+      "--step-mul",
+      "--gen-tokens",
+      "--tokens",
+      "-n",
+      "--csv",
+      "--dump-frontier-logits-dir",
+      "-t",
+      "--threads",
+      "--backend",
+      "--metal",
+      "--cuda",
+      "--cpu",
+      "--quality",
+      "--power",
+      "--warm-weights"
+    ],
+    "ds4-eval": [
+      "-h",
+      "--help",
+      "-m",
+      "--model",
+      "--mtp",
+      "-c",
+      "--ctx",
+      "-n",
+      "--tokens",
+      "--questions",
+      "--case-sequence",
+      "--temp",
+      "--top-p",
+      "--min-p",
+      "--seed",
+      "--trace",
+      "--regrade-trace",
+      "--soft-limit-reply-budget",
+      "--hard-limit-reply-budget",
+      "--soft-limit-think-close-rank",
+      "--pause-ms",
+      "-t",
+      "--threads",
+      "--backend",
+      "--metal",
+      "--cuda",
+      "--cpu",
+      "--quality",
+      "--power",
+      "--warm-weights",
+      "--think",
+      "--think-max",
+      "--nothink",
+      "--plain",
+      "--self-test-extractors"
+    ],
+    "ds4-server": [
+      "-h",
+      "--help",
+      "-m",
+      "--model",
+      "--mtp",
+      "--mtp-draft",
+      "--mtp-margin",
+      "-c",
+      "--ctx",
+      "-n",
+      "--tokens",
+      "-t",
+      "--threads",
+      "--chdir",
+      "--host",
+      "--port",
+      "--cors",
+      "--trace",
+      "--kv-disk-dir",
+      "--kv-disk-space-mb",
+      "--kv-cache-min-tokens",
+      "--kv-cache-cold-max-tokens",
+      "--kv-cache-continued-interval-tokens",
+      "--kv-cache-boundary-trim-tokens",
+      "--kv-cache-boundary-align-tokens",
+      "--kv-cache-reject-different-quant",
+      "--disable-exact-dsml-tool-replay",
+      "--tool-memory-max-ids",
+      "--quality",
+      "--power",
+      "--dir-steering-file",
+      "--dir-steering-ffn",
+      "--dir-steering-attn",
+      "--warm-weights",
+      "--metal",
+      "--cuda",
+      "--backend",
+      "--cpu"
+    ]
+  },
+  "ds4_revision": "ba00a8a88c4c5810a3d1fed6b7b8fa2b44b82fdc",
+  "env_vars": [
+    {
+      "name": "HOME",
+      "source": "ds4_agent.c"
+    },
+    {
+      "name": "LINENOISE_ASSUME_TTY",
+      "source": "ds4_agent.c"
+    },
+    {
+      "name": "DS4_MTP_SPEC_DISABLE",
+      "source": "ds4_cli.c"
+    },
+    {
+      "name": "HOME",
+      "source": "ds4_cli.c"
+    },
+    {
+      "name": "DS4_THREADS",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_CUDA_WEIGHT_PRELOAD_SPAN_MB",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_CUDA_DIRECT_MODEL",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_DECODE_PROFILE_DETAIL",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_PREFILL_PROFILE_DETAIL",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_ROUTED_TOKEN_PARALLEL",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_NO_ROUTED_TOKEN_PARALLEL",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_PREFILL_CHUNK",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_PARALLEL_ATTN_ROWS",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_NO_PARALLEL_ATTN_ROWS",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_BATCHED_ROPE_MAX",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_NO_BATCHED_ROPE",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_PREFILL_PROFILE_TOKEN",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_NO_BATCHED_ATTN",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_BATCHED_FFN",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_PARALLEL_FFN",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_NO_SHARED_BATCH_FFN",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_PREFILL_BATCH",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_DUMP_PREFIX",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_DUMP_NAME",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_DUMP_LAYER",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_DUMP_POS",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_DECODE_INDEXER_SPARSE_THRESHOLD",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_DECODE_STAGE_PROFILE",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_INDEXER_STAGE_PROFILE",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_DISABLE_SHARED_GATE_UP_SWIGLU_FUSION",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_TRACE_LAYERS",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_TEACHER_FORCE",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_TRACE_STAGE_LAYER",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_TOKEN_SPLIT_LAYERS",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GPU_BATCH_EMBED_MIN",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_NO_PREFILL_KERNEL_WARMUP",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_LAYER_STAGE_PROFILE",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_Q_STAGE_PROFILE",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_TOKEN_PROFILE",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_PREFILL_SPLIT_PROFILE",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_PREFILL_PROFILE",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_OUTPUT_ROW",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_RAW_CAP",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_RESUME_PREFILL_MIN",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_PROMPT_TOKENS",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_MEMORY_REPORT",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_ORACLE_LOGITS",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_DUMP_LOGITS",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_CPU_DUMP_LOGITS",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_TRACE_CACHE",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_GRAPH_TRACE_COMP",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_TRACE_TOP",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_CPU_DUMP_PREFILL_LOGITS",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_TOKEN_TIMING",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_METAL_DUMP_PREFILL_LOGITS",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_LOCK_FILE",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_MTP_PROBE",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_MTP_FULL_LOGITS",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_MTP_STRICT",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_MTP_MIN_MARGIN",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_MTP_TIMING",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_MTP_CONF_LOG",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_MTP_SPEC_LOG",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_MTP_BATCH_VERIFY",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_MTP_CAPTURE_PREFIX1",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_MTP_EXACT_REPLAY",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_MTP_FORCE_SNAPSHOT",
+      "source": "ds4.c"
+    },
+    {
+      "name": "DS4_DIST_PREFILL_SEND_DEPTH",
+      "source": "ds4_distributed.c"
+    },
+    {
+      "name": "DS4_DIST_SOCKET_BUFFER_MB",
+      "source": "ds4_distributed.c"
+    },
+    {
+      "name": "DS4_DIST_WORKER_PREFETCH_DEPTH",
+      "source": "ds4_distributed.c"
+    },
+    {
+      "name": "DS4_DIST_WORKER_FORWARD_WINDOW",
+      "source": "ds4_distributed.c"
+    },
+    {
+      "name": "DS4_DIST_SOCKET_TIMEOUT_SEC",
+      "source": "ds4_distributed.c"
+    },
+    {
+      "name": "DS4_DIST_DISABLE_PREFILL_PIPELINE",
+      "source": "ds4_distributed.c"
+    },
+    {
+      "name": "DS4_DIST_PREFILL_CHUNK",
+      "source": "ds4_distributed.c"
+    },
+    {
+      "name": "DS4_DIST_PREFILL_WINDOW",
+      "source": "ds4_distributed.c"
+    },
+    {
+      "name": "DS4_DIST_DISABLE_PREFILL_ACK_ONLY",
+      "source": "ds4_distributed.c"
+    },
+    {
+      "name": "DS4_DIST_DISABLE_WORKER_PREFETCH",
+      "source": "ds4_distributed.c"
+    },
+    {
+      "name": "DS4_MTP_SPEC_DISABLE",
+      "source": "ds4_server.c"
+    },
+    {
+      "name": "DS4_CHROME",
+      "source": "ds4_web.c"
+    },
+    {
+      "name": "PATH",
+      "source": "ds4_web.c"
+    },
+    {
+      "name": "HOME",
+      "source": "ds4_web.c"
+    }
+  ],
+  "file_interfaces": [
+    {
+      "path": "~/.ds4/kvcache",
+      "purpose": "agent KV sessions"
+    },
+    {
+      "path": "~/.ds4_agent_history",
+      "purpose": "ds4-agent line history"
+    },
+    {
+      "path": "~/.ds4_history",
+      "purpose": "ds4 CLI line history"
+    }
+  ],
+  "schema_version": 1,
+  "server_http": {
+    "endpoints": [
+      {
+        "method": "OPTIONS",
+        "path": "*"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models/deepseek-v4-flash"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/models/deepseek-v4-pro"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/messages"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/chat/completions"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/responses"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/completions"
+      }
+    ],
+    "model_aliases": [
+      "deepseek-v4-flash",
+      "deepseek-v4-pro"
+    ],
+    "source": "ds4_server.c"
+  },
+  "source": "git",
+  "wrapper_policy": {
+    "contract_source": "DS4 C source at ds4_revision",
+    "error_style": "explicit ok/error payloads; no silent fallback across contract drift",
+    "naming": "preserve DS4 wire names and command names at boundaries"
+  }
+}

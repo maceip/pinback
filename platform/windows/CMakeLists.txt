@@ -36,6 +36,13 @@ endif()
 add_executable(pinback-shell WIN32 main.cpp app.manifest)
 target_include_directories(pinback-shell PRIVATE "${WV2_NATIVE}/include")
 
+# Size-oriented Release flags: optimize for size, function-level linking, then
+# fold/drop unreferenced code. Dynamic CRT is kept on purpose (/MT is ~10x bigger).
+if(MSVC)
+    target_compile_options(pinback-shell PRIVATE $<$<CONFIG:Release>:/O1 /Os /Gy>)
+    target_link_options(pinback-shell PRIVATE $<$<CONFIG:Release>:/OPT:REF /OPT:ICF>)
+endif()
+
 if(WEBVIEW2_STATIC_LOADER)
     # Smaller deployment (no DLL), but pulls in extra system libs.
     target_link_libraries(pinback-shell PRIVATE

@@ -13,6 +13,7 @@ APP="Pinback.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp "$BIN" "$APP/Contents/MacOS/PinbackShell"
+strip -x "$APP/Contents/MacOS/PinbackShell"   # drop local symbols
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

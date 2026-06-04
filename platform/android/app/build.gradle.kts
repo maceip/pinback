@@ -26,7 +26,12 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 full mode (AGP default) + resource shrinking: strips unused dex
+            // and resources. Shrinking the kotlin-stdlib/androidx graph is the
+            // single biggest APK-size win short of dropping AndroidX entirely.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
         }
     }
 

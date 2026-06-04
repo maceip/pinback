@@ -12,7 +12,15 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "PinbackShell",
-            path: "Sources/PinbackShell"
+            path: "Sources/PinbackShell",
+            // Optimize the release binary for size and strip dead code. The
+            // WKWebView engine + Swift runtime are OS dylibs, never in the binary.
+            swiftSettings: [
+                .unsafeFlags(["-Osize"], .when(configuration: .release))
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-Wl,-dead_strip"])
+            ]
         )
     ]
 )

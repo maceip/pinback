@@ -73,4 +73,6 @@ the macOS 26 / iOS 26 SDK (Xcode 26 beta) for the new SwiftUI `WebView`, which
 hosted runners don't ship yet — build those locally with Xcode 26.
 
 See each subdirectory's `README.md` for build/run instructions and the exact
-newest-library version notes.
+newest-library version notes, and [`SIZE.md`](./SIZE.md) for the size research:
+ranked smallest-code/smallest-binary approaches per platform, what's already
+applied, and the remaining language/architecture forks.

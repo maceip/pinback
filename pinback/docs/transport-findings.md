@@ -117,12 +117,29 @@ output, timing) is recoverable from the trace — in any transport mode. The
 stdout pretty-render also carries more than expected: `🛠️ $ <cmd>` followed by
 the command output.
 
-**Unifying architecture (chosen for #1 + #3):** run the agent in TUI mode
-(`LINENOISE_ASSUME_TTY`, CPR reply, CR submit) with `--trace`. Read prose +
-structured tools + results from the **trace** (clean, exact); parse **stdout**
-only for `saved session`/`switched to` acks and turn-end. This gives exact,
-unbounded KV resume (`/save`+`/switch`) AND rich tool cards, with no vterm
-noise-filter. Re-prefill stays as the fallback when `/save` yields no SHA.
+## KV resume (`--kv-resume`) — status: mechanism works, prose extraction rough
+
+Implemented behind the `--kv-resume` flag (default OFF). Verified live:
+- TUI spawn (`LINENOISE_ASSUME_TTY`) + CPR reply + CR submit boots and runs.
+- `/save` on switch-away is captured: `saved session <sha>` is latched and a
+  real `~/.ds4/kvcache/<sha>.kv` is written; the SHA persists to the workspace.
+- `/switch <sha>` on switch-back restores the KV session.
+
+**The unsolved part is prose extraction.** ds4-agent's content streams through
+linenoise's redraw choreography, and the editor widget (prompt/status) scrolls
+through the same screen region as content. `src/vterm.c` models the screen and
+recovers content for the validated short fixture, but on live multi-line,
+thinking-mode, scrolling output the content region is volatile enough that
+short replies get missed and boot/widget artifacts leak. This is the
+"linenoise filter is gnarly" risk, realized.
+
+**So the shipped default is the clean non-interactive transport + transcript
+re-prefill** (`pin_event_log_render_transcript` -> prepended to the next
+prompt, bounded by the per-workspace ring, ~256 KB rail). It preserves session
+state robustly across switches (verified: the agent recalls a fact set before
+the switch). `--kv-resume` is the experimental exact-KV path; finishing it
+needs a proper scrollback model (emit a content line exactly once when it
+finalizes) or sourcing prose from `--trace` instead of the TUI screen.
 
 ## The filter (src/vterm.c) — superseded by the trace channel above
 

@@ -66,6 +66,13 @@ static void usage(FILE *fp) {
         "  --web-dir DIR      serve UI from disk\n"
         "  --dev              dev mode: read web/ from disk\n"
         "  --quiet            only warnings and errors\n"
+        "  --kv-resume        EXPERIMENTAL: drive ds4-agent's TUI for exact\n"
+        "                     /save+/switch KV resume. The KV mechanism works\n"
+        "                     (sessions are saved/restored), but prose\n"
+        "                     extraction from the TUI redraw stream is still\n"
+        "                     rough. Default off: clean transport + transcript\n"
+        "                     re-prefill, which preserves session state\n"
+        "                     robustly. See docs/transport-findings.md.\n"
         "  --help, -h         show this message\n",
         fp);
 }
@@ -162,6 +169,7 @@ int main(int argc, char **argv) {
     const char *web_dir        = NULL;
     bool        dev_mode       = false;
     bool        quiet          = false;
+    bool        kv_resume      = false;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -175,6 +183,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--web-dir")    && i + 1 < argc) web_dir = argv[++i];
         else if (!strcmp(a, "--dev"))                          dev_mode = true;
         else if (!strcmp(a, "--quiet"))                        quiet = true;
+        else if (!strcmp(a, "--kv-resume"))                    kv_resume = true;
         else {
             fprintf(stderr, "pinback-server: unknown flag '%s'\n", a);
             usage(stderr);
@@ -218,8 +227,9 @@ int main(int argc, char **argv) {
          * docs/todo-paint.md. Tests against fake-ds4-agent override
          * this with a non-zero timeout because the fake honors the
          * dance directly on stdin. */
-        .save_timeout_ms = 0,
+        .save_timeout_ms = kv_resume ? 8000 : 0,
         .term_timeout_ms = 5000,
+        .kv_resume       = kv_resume,
     };
     pin_agent *agent = pin_agent_new(&acfg, store);
     if (!agent) {

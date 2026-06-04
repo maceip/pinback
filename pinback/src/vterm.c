@@ -45,11 +45,40 @@ void pin_vterm_free(pin_vterm *vt) {
     free(vt);
 }
 
-/* Append a row's visible text (trailing spaces trimmed) + '\n'. */
+/* True for rows that belong to the editor widget (the prompt line or the
+ * status footer), which linenoise redraws constantly and which scroll off
+ * the top as content grows. They must never be treated as content. */
+static bool is_editor_row(const char *row, int cols) {
+    if (cols >= (int)strlen(PROMPT) && memcmp(row, PROMPT, strlen(PROMPT)) == 0)
+        return true;
+    char tmp[256];
+    int n = cols < (int)sizeof(tmp) - 1 ? cols : (int)sizeof(tmp) - 1;
+    memcpy(tmp, row, (size_t)n);
+    tmp[n] = '\0';
+    if (strstr(tmp, "ctx ") != NULL && strstr(tmp, "| ") != NULL) return true;
+    /* one-time boot banner ds4-agent prints after the model loads */
+    if (strstr(tmp, "DwarfStar Agent, context") != NULL) return true;
+    return false;
+}
+
+/* Append a row's visible text (trailing spaces trimmed) + '\n', unless it
+ * is an editor-widget row (then it is dropped) or an exact duplicate of
+ * the previous scrollback line (linenoise re-emits rows during redraws). */
 static void push_row_to_scrollback(pin_vterm *vt, int r) {
+    if (is_editor_row(vt->grid[r], vt->cols)) return;
     int end = vt->cols;
     while (end > 0 && vt->grid[r][end - 1] == ' ') end--;
-    if (end > 0) pin_buf_append(&vt->scrollback, vt->grid[r], (size_t)end);
+    if (end == 0) return;            /* drop blank scrolled rows */
+    /* de-dup against the previous scrollback line */
+    size_t sl = vt->scrollback.len;
+    if (sl >= (size_t)end + 1) {
+        const char *prev = vt->scrollback.ptr + sl - (size_t)end - 1;
+        if (prev[(size_t)end] == '\n' &&
+            (sl == (size_t)end + 1 || prev[-1] == '\n') &&
+            memcmp(prev, vt->grid[r], (size_t)end) == 0)
+            return;
+    }
+    pin_buf_append(&vt->scrollback, vt->grid[r], (size_t)end);
     pin_buf_putc(&vt->scrollback, '\n');
 }
 
@@ -164,9 +193,11 @@ void pin_vterm_content(pin_vterm *vt, pin_buf *out) {
     pin_buf_append(out, vt->scrollback.ptr, vt->scrollback.len);
     int pr = prompt_row(vt);
     for (int r = 0; r < pr; r++) {
+        if (is_editor_row(vt->grid[r], vt->cols)) continue;
         int end = vt->cols;
         while (end > 0 && vt->grid[r][end - 1] == ' ') end--;
-        if (end > 0) pin_buf_append(out, vt->grid[r], (size_t)end);
+        if (end == 0) continue;
+        pin_buf_append(out, vt->grid[r], (size_t)end);
         pin_buf_putc(out, '\n');
     }
 }

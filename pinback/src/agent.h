@@ -46,6 +46,9 @@ typedef struct {
     int         spawn_ready_ms;  /* default 5000 */
     int         save_timeout_ms; /* default 5000 */
     int         term_timeout_ms; /* default 3000 */
+    bool        kv_resume;       /* drive the TUI for exact /save + /switch
+                                  * KV session resume (default off: clean
+                                  * non-interactive transport + re-prefill) */
 } pin_agent_config;
 
 typedef struct pin_agent pin_agent;

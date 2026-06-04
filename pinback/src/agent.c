@@ -4,6 +4,7 @@
 #include "log.h"
 #include "snapshot.h"
 #include "util.h"
+#include "vterm.h"
 #include "workspace.h"
 
 #include <ctype.h>
@@ -53,6 +54,21 @@ struct pin_agent {
      * switch (transcript re-prefill). NULL when there is nothing to
      * resume. Owned by the agent; cleared once consumed by a submit. */
     char           *pending_resume;
+
+    /* KV-resume (TUI) transport state. The vterm reconstructs clean
+     * content from linenoise's redraw stream; vt_lines counts how many
+     * stable content lines we've already classified. */
+    pin_vterm      *vt;
+    size_t          vt_lines;
+    bool            saw_turn_activity;   /* status left "idle" this turn */
+    pthread_mutex_t stdin_mu;            /* serialize writes to child stdin */
+
+    /* /save SHA capture (TUI mode): the reader scans content for
+     * "saved session <sha>" and signals the waiting switch. */
+    pthread_mutex_t sha_mu;
+    pthread_cond_t  sha_cv;
+    char            captured_sha[64];
+    bool            sha_pending;
 
     /* Counters. */
     long long       turns_total;
@@ -268,6 +284,39 @@ static void classifier_signal_turn_end(pin_agent *a) {
     agent_emit_turn_changes(a);
 }
 
+/* Pull an 8-40 char hex token following `prefix` out of a line and, if
+ * present, latch it as the captured /save SHA. Used in KV (TUI) mode to
+ * read "saved session <sha>" / "switched to session <sha>" acks. */
+static void sha_scan_after(pin_agent *a, const char *line, size_t n,
+                           const char *prefix) {
+    size_t plen = strlen(prefix);
+    if (n < plen || memcmp(line, prefix, plen) != 0) return;
+    size_t i = plen;
+    while (i < n && line[i] == ' ') i++;
+    size_t j = i;
+    while (j < n) {
+        char c = line[j];
+        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) j++;
+        else break;
+    }
+    size_t take = j - i;
+    if (take < 6 || take > 40) return;
+    pthread_mutex_lock(&a->sha_mu);
+    size_t cap = sizeof(a->captured_sha) - 1;
+    if (take > cap) take = cap;
+    memcpy(a->captured_sha, line + i, take);
+    a->captured_sha[take] = '\0';
+    a->sha_pending = false;
+    pthread_cond_broadcast(&a->sha_cv);
+    pthread_mutex_unlock(&a->sha_mu);
+    pin_workspace_store_set_session_sha(a->ws, a->active_id, a->captured_sha);
+}
+
+static void capture_session_sha(pin_agent *a, const char *line, size_t n) {
+    sha_scan_after(a, line, n, "saved session ");
+    sha_scan_after(a, line, n, "switched to session ");
+}
+
 /* Classify and emit one logical line (newline already stripped). A line
  * that begins with the wrench glyph is a tool action; everything else is
  * prose. `had_newline` is true for a complete line (we re-attach the
@@ -275,6 +324,15 @@ static void classifier_signal_turn_end(pin_agent *a) {
  * flushed without its terminator. */
 static void classifier_emit_line(pin_agent *a, const char *s, size_t n,
                                  bool had_newline) {
+    if (a->cfg.kv_resume) {
+        /* TUI content also carries the "* <prompt>" echo and the output of
+         * /save, /switch, /list issued during a switch. Capture session
+         * SHAs from it, drop the echo, and only surface real turn output
+         * (state == BUSY) so switch-time chatter never pollutes the log. */
+        capture_session_sha(a, s, n);
+        if (n >= 2 && s[0] == '*' && s[1] == ' ') return;
+        if (a->state != PIN_AGENT_STATE_BUSY) return;
+    }
     static const char glyph[] = TOOL_GLYPH;
     const size_t glen = sizeof(glyph) - 1;
     if (n >= glen && memcmp(s, glyph, glen) == 0) {
@@ -329,10 +387,62 @@ typedef struct {
     pin_agent *a;
 } reader_args;
 
+/* Reply to a linenoise cursor-position-report request so the TUI does not
+ * hang. Bypasses stdin_write_line (no terminator). 8 bytes -> atomic. */
+static void tui_reply_cpr(pin_agent *a, int count) {
+    if (a->child_stdin < 0) return;
+    pthread_mutex_lock(&a->stdin_mu);
+    for (int i = 0; i < count; i++) {
+        ssize_t w = write(a->child_stdin, "\x1b[1;200R", 8);
+        (void)w;
+    }
+    pthread_mutex_unlock(&a->stdin_mu);
+}
+
+/* KV (TUI) mode: feed raw bytes through the vterm, answer CPR, emit newly
+ * stable content lines to the classifier, and derive turn-end from the
+ * status footer returning to "idle". A content line is "stable" once a
+ * newer line exists below it; the final line is flushed at turn-end. */
+static void tui_process(pin_agent *a, const char *buf, size_t n, bool flush) {
+    int cpr = pin_vterm_feed(a->vt, buf, n);
+    if (cpr) tui_reply_cpr(a, cpr);
+
+    char st[32];
+    pin_vterm_status(a->vt, st, sizeof(st));
+    bool nonidle = st[0] && strcmp(st, "idle") != 0;
+    if (nonidle) a->saw_turn_activity = true;
+    bool turn_ending = !nonidle && a->saw_turn_activity &&
+                       a->state == PIN_AGENT_STATE_BUSY;
+
+    pin_buf full;
+    pin_buf_init(&full);
+    pin_vterm_content(a->vt, &full);
+    size_t nlines = 0;
+    for (size_t i = 0; i < full.len; i++) if (full.ptr[i] == '\n') nlines++;
+    size_t stable = (nlines > 0 && !turn_ending && !flush) ? nlines - 1 : nlines;
+
+    size_t li = 0, line_start = 0;
+    for (size_t i = 0; i < full.len; i++) {
+        if (full.ptr[i] != '\n') continue;
+        if (li >= a->vt_lines && li < stable)
+            classifier_emit_line(a, full.ptr + line_start, i - line_start, true);
+        li++;
+        line_start = i + 1;
+    }
+    if (stable > a->vt_lines) a->vt_lines = stable;
+    pin_buf_free(&full);
+
+    if (turn_ending) {
+        a->saw_turn_activity = false;
+        classifier_signal_turn_end(a);
+    }
+}
+
 static void *stdout_reader(void *arg) {
     reader_args *ra = arg;
     pin_agent *a = ra->a;
     free(ra);
+    bool kv = a->cfg.kv_resume;
 
     classifier c;
     classifier_init(&c);
@@ -344,10 +454,15 @@ static void *stdout_reader(void *arg) {
             break;
         }
         if (n == 0) break;
-        classifier_feed(&c, buf, (size_t)n);
-        classifier_drain(&c, a, false);
+        if (kv) {
+            tui_process(a, buf, (size_t)n, false);
+        } else {
+            classifier_feed(&c, buf, (size_t)n);
+            classifier_drain(&c, a, false);
+        }
     }
-    classifier_drain(&c, a, true);
+    if (kv) tui_process(a, "", 0, true);
+    else    classifier_drain(&c, a, true);
     classifier_free(&c);
 
     pthread_mutex_lock(&a->mu);
@@ -485,7 +600,14 @@ static bool spawn_child_locked(pin_agent *a, const char *path) {
         char *argv[16];
         int ai = 0;
         argv[ai++] = (char *)a->cfg.agent_bin;
-        argv[ai++] = (char *)"--non-interactive";
+        if (a->cfg.kv_resume) {
+            /* TUI mode over pipes: linenoise needs to believe it has a
+             * terminal so /save and /switch work (see transport-findings). */
+            setenv("LINENOISE_ASSUME_TTY", "1", 1);
+            setenv("TERM", "dumb", 1);
+        } else {
+            argv[ai++] = (char *)"--non-interactive";
+        }
         argv[ai++] = (char *)"--chdir";
         argv[ai++] = (char *)path;
         if (a->cfg.model_path && *a->cfg.model_path) {
@@ -507,6 +629,13 @@ static bool spawn_child_locked(pin_agent *a, const char *path) {
     a->child_stdout  = out_pipe[0];
     a->child_stderr  = err_pipe[0];
     a->last_spawn_ms = (long long)pin_monotonic_ms();
+
+    if (a->cfg.kv_resume) {
+        if (a->vt) pin_vterm_free(a->vt);   /* drop the previous spawn's screen */
+        a->vt = pin_vterm_new(200, 24);
+        a->vt_lines = 0;
+        a->saw_turn_activity = false;
+    }
 
     reader_args *ra1 = pin_xcalloc(1, sizeof(*ra1)); ra1->a = a;
     reader_args *ra2 = pin_xcalloc(1, sizeof(*ra2)); ra2->a = a;
@@ -577,19 +706,23 @@ static bool kill_child_locked(pin_agent *a, int term_timeout_ms) {
 
 static bool stdin_write_line(pin_agent *a, const char *line) {
     if (a->child_stdin < 0) return false;
-    size_t llen = strlen(line);
+    /* linenoise's Enter is CR; --non-interactive batches on LF. */
+    const char term = a->cfg.kv_resume ? '\r' : '\n';
+    bool ok = true;
+    pthread_mutex_lock(&a->stdin_mu);
+    size_t left = strlen(line);
     const char *p = line;
-    size_t left = llen;
     while (left > 0) {
         ssize_t w = write(a->child_stdin, p, left);
         if (w < 0) {
             if (errno == EINTR) continue;
-            return false;
+            ok = false; break;
         }
         p += w; left -= (size_t)w;
     }
-    if (write(a->child_stdin, "\n", 1) < 0) return false;
-    return true;
+    if (ok && write(a->child_stdin, &term, 1) < 0) ok = false;
+    pthread_mutex_unlock(&a->stdin_mu);
+    return ok;
 }
 
 /* ====================================================================
@@ -605,7 +738,9 @@ static bool stdin_write_line(pin_agent *a, const char *line) {
  * picks up the prior context. Files on disk and the UI's own event log
  * already carry the rest. */
 
-#define RESUME_MAX_BYTES (16 * 1024)
+/* Bound only as a safety rail; the per-workspace ring (thousands of
+ * events) is the real limit, so practical sessions resume in full. */
+#define RESUME_MAX_BYTES (256 * 1024)
 
 static void build_pending_resume(pin_agent *a, const char *workspace_id) {
     free(a->pending_resume);
@@ -642,6 +777,9 @@ pin_agent *pin_agent_new(const pin_agent_config *cfg, pin_workspace_store *ws) {
     a->child_stdin = a->child_stdout = a->child_stderr = -1;
     pthread_mutex_init(&a->mu, NULL);
     pthread_cond_init(&a->cv, NULL);
+    pthread_mutex_init(&a->stdin_mu, NULL);
+    pthread_mutex_init(&a->sha_mu, NULL);
+    pthread_cond_init(&a->sha_cv, NULL);
     return a;
 }
 
@@ -652,8 +790,37 @@ void pin_agent_free(pin_agent *a) {
     pthread_mutex_unlock(&a->mu);
     pthread_mutex_destroy(&a->mu);
     pthread_cond_destroy(&a->cv);
+    pthread_mutex_destroy(&a->stdin_mu);
+    pthread_mutex_destroy(&a->sha_mu);
+    pthread_cond_destroy(&a->sha_cv);
+    if (a->vt) pin_vterm_free(a->vt);
     free(a->pending_resume);
     free(a);
+}
+
+/* KV mode: ask the agent to /save and block (bounded) until the reader
+ * latches the SHA from "saved session <sha>". On success the workspace's
+ * session_sha is persisted (by the reader); on timeout we fall through to
+ * transcript re-prefill. */
+static bool kv_save_and_capture(pin_agent *a) {
+    pthread_mutex_lock(&a->sha_mu);
+    a->captured_sha[0] = '\0';
+    a->sha_pending = true;
+    pthread_mutex_unlock(&a->sha_mu);
+    if (!stdin_write_line(a, "/save")) return false;
+    long ms = a->cfg.save_timeout_ms > 0 ? a->cfg.save_timeout_ms : 5000;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += ms / 1000;
+    ts.tv_nsec += (ms % 1000) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+    pthread_mutex_lock(&a->sha_mu);
+    while (a->sha_pending)
+        if (pthread_cond_timedwait(&a->sha_cv, &a->sha_mu, &ts) != 0) break;
+    bool got = a->captured_sha[0] != '\0';
+    a->sha_pending = false;
+    pthread_mutex_unlock(&a->sha_mu);
+    return got;
 }
 
 bool pin_agent_activate(pin_agent *a, const char *workspace_id, char **out_err) {
@@ -675,12 +842,12 @@ bool pin_agent_activate(pin_agent *a, const char *workspace_id, char **out_err) 
         pin_workspace_meta_free(&meta);
         return true;
     }
-    /* A child for a different workspace just gets torn down. ds4-agent
-     * cannot persist its session over the pipe, so there is nothing to
-     * save here; the workspace's event log already holds the transcript
-     * and the files are on disk. */
+    /* Tear down the outgoing workspace's agent. In KV mode we first ask it
+     * to /save so the session can be restored exactly on return; otherwise
+     * there is nothing to persist (the event log + files already are). */
     if (a->child_pid > 0) {
         a->state = PIN_AGENT_STATE_DRAINING;
+        if (a->cfg.kv_resume) kv_save_and_capture(a);
         kill_child_locked(a, a->cfg.term_timeout_ms);
     }
     /* Bind to new workspace. */
@@ -697,9 +864,17 @@ bool pin_agent_activate(pin_agent *a, const char *workspace_id, char **out_err) 
         pin_workspace_meta_free(&meta);
         return false;
     }
-    /* Resume continuity: if this workspace already has a conversation,
-     * stage its transcript to prepend to the next prompt. */
-    build_pending_resume(a, meta.id);
+    /* Resume continuity. KV mode: if this workspace has a saved session,
+     * restore it exactly with /switch (the command buffers until the fresh
+     * agent finishes loading). Otherwise -- and always in non-KV mode --
+     * fall back to transcript re-prefill on the next prompt. */
+    if (a->cfg.kv_resume && meta.session_sha && *meta.session_sha) {
+        char cmd[128];
+        snprintf(cmd, sizeof(cmd), "/switch %s", meta.session_sha);
+        stdin_write_line(a, cmd);
+    } else {
+        build_pending_resume(a, meta.id);
+    }
     a->state = PIN_AGENT_STATE_READY;
     emit_state(a);
     pthread_mutex_unlock(&a->mu);

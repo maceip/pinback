@@ -74,6 +74,11 @@ void pin_event_log_render_snapshot(pin_event_log *log, pin_buf *out);
 void pin_event_log_render_transcript(pin_event_log *log, pin_buf *out,
                                      size_t max_bytes);
 
+/* Newest user prompt and newest answer text in the ring (for dashboard
+ * previews). Each appends to its buf when found; bufs left empty if none. */
+void pin_event_log_last_preview(pin_event_log *log, pin_buf *user_out,
+                                pin_buf *answer_out);
+
 /* Subscribe and serve. Takes ownership of fd. Returns when the client
  * disconnects, the log closes, or a protocol error occurs. */
 typedef struct {

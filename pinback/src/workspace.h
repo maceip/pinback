@@ -93,4 +93,10 @@ bool pin_workspace_store_reset(pin_workspace_store *s, const char *id,
 pin_event_log *pin_workspace_store_event_log(pin_workspace_store *s,
                                              const char *id);
 
+/* Write the per-workspace state directory (<root>/workspaces/<id>) into
+ * `buf`. Returns false if buf is too small. Does not require the id to
+ * exist in the catalog. */
+bool pin_workspace_store_ws_dir(pin_workspace_store *s, const char *id,
+                                char *buf, size_t cap);
+
 #endif

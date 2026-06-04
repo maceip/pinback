@@ -276,6 +276,71 @@ header button.danger:hover{background:#2a151b;color:#ffb6b6}
   font-family:ui-monospace,SFMono-Regular,"SF Mono",Consolas,monospace;
 }
 .dsml-streaming-dot{margin-left:4px; color:var(--warn)}
+
+/* Tool-call cards (#3) */
+.toolcard{margin:6px 0; border:1px solid var(--border); border-radius:8px;
+  overflow:hidden; background:var(--tool)}
+.toolcard>summary{list-style:none; cursor:pointer; padding:7px 11px;
+  display:flex; align-items:center; gap:8px; font-size:13px}
+.toolcard>summary::-webkit-details-marker{display:none}
+.toolcard>summary::before{content:'\25B8'; color:var(--fg-mute);
+  transition:transform .12s}
+.toolcard[open]>summary::before{transform:rotate(90deg)}
+.toolcard .tc-name{font-weight:600}
+.toolcard .tc-arg{color:var(--fg-mute); font-family:ui-monospace,monospace;
+  font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.toolcard .tc-body{padding:0 11px 10px}
+.toolcard pre{margin:0; padding:8px 10px; background:var(--code,#0b0e14);
+  border-radius:6px; overflow:auto; font-size:12px;
+  font-family:ui-monospace,monospace}
+
+/* Per-turn change panel (#4) */
+.turndiff{margin:8px 0; border:1px solid var(--border); border-radius:8px;
+  background:var(--asst)}
+.turndiff>.td-head{padding:8px 11px; font-size:13px; font-weight:600;
+  display:flex; align-items:center; gap:8px}
+.turndiff .td-file{border-top:1px solid var(--border)}
+.turndiff .td-file>summary{cursor:pointer; padding:6px 11px; font-size:12px;
+  font-family:ui-monospace,monospace; display:flex; align-items:center; gap:8px}
+.turndiff .td-file>summary::-webkit-details-marker{display:none}
+.turndiff .hunk{border-top:1px dashed var(--border); padding:6px 0}
+.turndiff .hunk pre{margin:0; font-size:12px; font-family:ui-monospace,monospace;
+  overflow:auto}
+.turndiff .dl{display:block; padding:0 11px; white-space:pre}
+.turndiff .dl.add{background:rgba(60,160,90,.16)}
+.turndiff .dl.del{background:rgba(200,70,70,.16)}
+.turndiff .dl.hdr{color:var(--fg-mute)}
+.turndiff .revert{float:right; font-size:11px; padding:2px 8px; margin:2px 11px;
+  cursor:pointer; border:1px solid var(--border); border-radius:5px;
+  background:transparent; color:var(--fg-mute)}
+.turndiff .revert:hover{color:var(--fg); border-color:var(--warn)}
+
+/* Dashboard (#5) */
+#dash-btn,#reset-btn,#dash-close{cursor:pointer}
+#dash-overlay{position:fixed; inset:0; background:rgba(0,0,0,.5);
+  display:flex; align-items:flex-start; justify-content:center; z-index:50;
+  padding:48px 16px}
+#dash-overlay[hidden]{display:none}
+#dash-panel{background:var(--bg,#0d1017); border:1px solid var(--border);
+  border-radius:12px; width:min(900px,96vw); max-height:80vh; overflow:auto}
+#dash-head{display:flex; align-items:center; justify-content:space-between;
+  padding:12px 16px; border-bottom:1px solid var(--border)}
+#dash-head h3{margin:0; font-size:15px}
+#dash-close{background:transparent; border:none; color:var(--fg-mute);
+  font-size:16px}
+#dash-table{width:100%; border-collapse:collapse; font-size:13px}
+#dash-table th{text-align:left; padding:8px 16px; color:var(--fg-mute);
+  cursor:pointer; user-select:none; border-bottom:1px solid var(--border)}
+#dash-table td{padding:8px 16px; border-bottom:1px solid var(--border);
+  vertical-align:top}
+#dash-table tr.row{cursor:pointer}
+#dash-table tr.row:hover{background:var(--asst)}
+#dash-table tr.active td:first-child{font-weight:700}
+.dash-state{font-size:11px; padding:1px 7px; border-radius:10px;
+  border:1px solid var(--border)}
+.dash-state.ready,.dash-state.busy{color:var(--warn); border-color:var(--warn)}
+.dash-prev{color:var(--fg-mute); max-width:340px; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap}
 </style>
 </head>
 <body>
@@ -291,6 +356,7 @@ header button.danger:hover{background:#2a151b;color:#ffb6b6}
   <span class="runtime" id="runtime">
     <span><span class="dot" id="up-dot"></span><span id="up-state">connecting&#8230;</span></span>
   </span>
+  <button id="dash-btn" title="Cross-workspace dashboard">Dashboard</button>
   <button id="reset-btn" title="Reset this workspace's conversation">Reset</button>
   <div id="ws-tray">
     <h4>Workspaces</h4>
@@ -314,6 +380,24 @@ header button.danger:hover{background:#2a151b;color:#ffb6b6}
   <textarea id="prompt" rows="1" placeholder="Message ds4-agent&#8230;" autofocus></textarea>
   <button id="stop" hidden>Stop</button>
   <button id="send">Send</button>
+</div>
+
+<div id="dash-overlay" hidden>
+  <div id="dash-panel">
+    <div id="dash-head">
+      <h3>Workspaces</h3>
+      <button id="dash-close" title="Close">&#10005;</button>
+    </div>
+    <table id="dash-table">
+      <thead><tr>
+        <th data-sort="label">Workspace</th>
+        <th data-sort="state">State</th>
+        <th data-sort="last_active_ms">Last active</th>
+        <th data-sort="preview">Last turn</th>
+      </tr></thead>
+      <tbody id="dash-rows"></tbody>
+    </table>
+  </div>
 </div>
 
 <script src="/app.js" defer></script>

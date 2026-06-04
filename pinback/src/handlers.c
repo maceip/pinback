@@ -4,6 +4,7 @@
 #include "event_log.h"
 #include "http.h"
 #include "log.h"
+#include "snapshot.h"
 #include "static_assets.h"
 #include "util.h"
 #include "workspace.h"
@@ -333,6 +334,57 @@ static void handle_ws_delete(pin_app *app, int fd, const pin_request *r,
     pin_buf_free(&out);
 }
 
+/* POST /api/w/<id>/revert {patch}: reverse-apply a hunk to the
+ * workspace files (per-hunk undo of a change made this/earlier turn). */
+static void handle_ws_revert(pin_app *app, int fd, const pin_request *r,
+                             const char *id) {
+    if (strcmp(r->method, "POST") != 0) {
+        pin_http_respond_error(fd, r, 405, "method_not_allowed", "POST required");
+        return;
+    }
+    if (!r->body || r->body_len == 0) {
+        pin_http_respond_error(fd, r, 400, "empty_body", "JSON body required");
+        return;
+    }
+    pin_workspace_meta meta;
+    if (!pin_workspace_store_get(app->ws, id, &meta)) {
+        pin_http_respond_error(fd, r, 404, "not_found", "unknown workspace");
+        return;
+    }
+    char *body = pin_xstrndup(r->body, r->body_len);
+    const char *p = NULL;
+    char *patch = NULL;
+    if (!pin_json_find_key(body, "patch", &p) ||
+        !pin_json_parse_string(&p, &patch)) {
+        free(body);
+        pin_workspace_meta_free(&meta);
+        pin_http_respond_error(fd, r, 400, "missing_patch", "expected {\"patch\":...}");
+        return;
+    }
+    char gdir[1100];
+    char wsd[1024];
+    bool okdir = pin_workspace_store_ws_dir(app->ws, id, wsd, sizeof(wsd));
+    if (okdir) snprintf(gdir, sizeof(gdir), "%s/snapshot.git", wsd);
+    char errbuf[160] = {0};
+    bool ok = okdir && pin_snapshot_revert(gdir, meta.path, patch,
+                                           strlen(patch), errbuf, sizeof(errbuf));
+    free(patch); free(body);
+    pin_workspace_meta_free(&meta);
+    if (!ok) {
+        pin_http_respond_error(fd, r, 409, "revert_failed",
+                               errbuf[0] ? errbuf : "could not apply revert");
+        return;
+    }
+    /* Tell connected clients so they can drop the hunk from the panel. */
+    pin_event_log *log = pin_workspace_store_event_log(app->ws, id);
+    if (log) pin_event_log_append(log, "reverted", "{}", 2);
+    pin_buf out;
+    pin_buf_init(&out);
+    pin_buf_puts(&out, "{\"ok\":true}");
+    pin_http_respond_json(fd, r, 200, &out);
+    pin_buf_free(&out);
+}
+
 static void handle_ws_dispatch(pin_app *app, int fd, const pin_request *r) {
     const char *rest = NULL;
     char *id = extract_ws_id(r->path, &rest);
@@ -373,6 +425,7 @@ static void handle_ws_dispatch(pin_app *app, int fd, const pin_request *r) {
     else if (!strcmp(rest, "events"))   handle_ws_events  (app, fd, r, id);
     else if (!strcmp(rest, "input"))    handle_ws_input   (app, fd, r, id);
     else if (!strcmp(rest, "control"))  handle_ws_control (app, fd, r, id);
+    else if (!strcmp(rest, "revert"))   handle_ws_revert  (app, fd, r, id);
     else pin_http_respond_error(fd, r, 404, "not_found", "no such workspace endpoint");
     free(id);
 }
@@ -413,6 +466,59 @@ static void handle_runtime(pin_app *app, int fd, const pin_request *r) {
     if (active) pin_json_str(&out, active); else pin_buf_puts(&out, "null");
     pin_buf_putc(&out, '}');
     free(active);
+    pin_http_respond_json(fd, r, 200, &out);
+    pin_buf_free(&out);
+}
+
+/* GET /api/dashboard: one row per workspace with last-active, state, and a
+ * preview of the last turn. Only the active workspace has live agent state;
+ * the rest report "idle" (last-known). */
+static void handle_dashboard(pin_app *app, int fd, const pin_request *r) {
+    if (strcmp(r->method, "GET") != 0) {
+        pin_http_respond_error(fd, r, 405, "method_not_allowed", "GET required");
+        return;
+    }
+    pin_agent_status as;
+    pin_agent_status_get(app->agent, &as);
+    char *active = pin_workspace_store_get_active(app->ws);
+    size_t n = 0;
+    pin_workspace_meta *ws = pin_workspace_store_list(app->ws, &n);
+
+    pin_buf out;
+    pin_buf_init(&out);
+    pin_buf_putc(&out, '{');
+    pin_buf_puts(&out, "\"active_id\":");
+    if (active) pin_json_str(&out, active); else pin_buf_puts(&out, "null");
+    pin_buf_puts(&out, ",\"workspaces\":[");
+    for (size_t i = 0; i < n; i++) {
+        if (i) pin_buf_putc(&out, ',');
+        pin_workspace_meta *m = &ws[i];
+        bool is_active = active && !strcmp(active, m->id);
+        const char *state = is_active ? pin_agent_state_name(as.state) : "idle";
+        pin_buf up, ap;
+        pin_buf_init(&up);
+        pin_buf_init(&ap);
+        pin_event_log *log = pin_workspace_store_event_log(app->ws, m->id);
+        if (log) pin_event_log_last_preview(log, &up, &ap);
+        pin_buf_putc(&out, '{');
+        pin_buf_puts(&out, "\"id\":");        pin_json_str(&out, m->id);
+        pin_buf_puts(&out, ",\"label\":");    pin_json_str(&out, m->label ? m->label : "");
+        pin_buf_puts(&out, ",\"path\":");     pin_json_str(&out, m->path ? m->path : "");
+        pin_buf_printf(&out, ",\"last_active_ms\":%llu",
+                       (unsigned long long)m->last_active_ms);
+        pin_buf_printf(&out, ",\"created_ms\":%llu",
+                       (unsigned long long)m->created_ms);
+        pin_buf_puts(&out, ",\"active\":");   pin_buf_puts(&out, is_active ? "true" : "false");
+        pin_buf_puts(&out, ",\"state\":");    pin_json_str(&out, state);
+        pin_buf_puts(&out, ",\"last_user\":");   pin_json_strn(&out, up.ptr ? up.ptr : "", up.len);
+        pin_buf_puts(&out, ",\"last_answer\":"); pin_json_strn(&out, ap.ptr ? ap.ptr : "", ap.len);
+        pin_buf_putc(&out, '}');
+        pin_buf_free(&up);
+        pin_buf_free(&ap);
+    }
+    pin_buf_puts(&out, "]}");
+    free(active);
+    pin_workspace_meta_array_free(ws, n);
     pin_http_respond_json(fd, r, 200, &out);
     pin_buf_free(&out);
 }
@@ -530,6 +636,7 @@ void pin_handle_connection(pin_app *app, int fd) {
     if      (path_prefix(req.path, "/api/w", NULL))
         handle_ws_dispatch(app, fd, &req);
     else if (!strcmp(req.path, "/api/runtime"))  handle_runtime (app, fd, &req);
+    else if (!strcmp(req.path, "/api/dashboard")) handle_dashboard(app, fd, &req);
     else if (!strcmp(req.path, "/healthz"))      handle_health  (app, fd, &req);
     else if (!strcmp(req.path, "/readyz"))       handle_ready   (app, fd, &req);
     else if (!strcmp(req.path, "/metrics"))      handle_metrics (app, fd, &req);

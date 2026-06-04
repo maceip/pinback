@@ -563,3 +563,10 @@ pin_event_log *pin_workspace_store_event_log(pin_workspace_store *s,
     pthread_rwlock_unlock(&s->rw);
     return out;
 }
+
+bool pin_workspace_store_ws_dir(pin_workspace_store *s, const char *id,
+                                char *buf, size_t cap) {
+    if (!s || !id || !buf) return false;
+    int n = snprintf(buf, cap, "%s/workspaces/%s", s->root, id);
+    return n > 0 && (size_t)n < cap;
+}

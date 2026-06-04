@@ -442,6 +442,32 @@ static char *event_payload_text(const char *json) {
     return text;
 }
 
+void pin_event_log_last_preview(pin_event_log *log, pin_buf *user_out,
+                                pin_buf *answer_out) {
+    if (!log) return;
+    pthread_rwlock_rdlock(&log->rw);
+    bool have_user = false, have_ans = false;
+    /* Walk newest -> oldest. */
+    for (size_t i = 0; i < log->used && !(have_user && have_ans); i++) {
+        size_t idx = (log->head + log->cap - 1 - i) % log->cap;
+        const char *json = log->ring[idx].json;
+        if (!json) continue;
+        const char *kp = NULL;
+        if (!pin_json_find_key(json, "kind", &kp)) continue;
+        char *kind = NULL;
+        if (!pin_json_parse_string(&kp, &kind)) continue;
+        if (!have_user && !strcmp(kind, "user") && user_out) {
+            char *t = event_payload_text(json);
+            if (t) { pin_buf_puts(user_out, t); free(t); have_user = true; }
+        } else if (!have_ans && !strcmp(kind, "answer") && answer_out) {
+            char *t = event_payload_text(json);
+            if (t) { pin_buf_puts(answer_out, t); free(t); have_ans = true; }
+        }
+        free(kind);
+    }
+    pthread_rwlock_unlock(&log->rw);
+}
+
 void pin_event_log_render_transcript(pin_event_log *log, pin_buf *out,
                                      size_t max_bytes) {
     if (!log || !out) return;

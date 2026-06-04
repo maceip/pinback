@@ -31,6 +31,7 @@ CORE_SRCS := \
 	$(SRC_DIR)/http.c \
 	$(SRC_DIR)/event_log.c \
 	$(SRC_DIR)/workspace.c \
+	$(SRC_DIR)/snapshot.c \
 	$(SRC_DIR)/agent.c \
 	$(SRC_DIR)/handlers.c \
 	$(SRC_DIR)/static_assets.c

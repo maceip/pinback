@@ -2,6 +2,7 @@
 
 #include "event_log.h"
 #include "log.h"
+#include "snapshot.h"
 #include "util.h"
 #include "workspace.h"
 
@@ -151,6 +152,46 @@ static void emit_turn_end(pin_agent *a) {
     emit_event(a, "answer_end", "{}", 2);
 }
 
+/* Shadow-git dir for the active workspace's per-turn change tracking. */
+static bool agent_snapshot_git_dir(pin_agent *a, char *buf, size_t cap) {
+    if (!a->active_id[0]) return false;
+    char wsd[1024];
+    if (!pin_workspace_store_ws_dir(a->ws, a->active_id, wsd, sizeof(wsd)))
+        return false;
+    int n = snprintf(buf, cap, "%s/snapshot.git", wsd);
+    return n > 0 && (size_t)n < cap;
+}
+
+static void emit_turn_diff(pin_agent *a, const char *diff, size_t len,
+                           int nfiles) {
+    pin_buf b;
+    pin_buf_init(&b);
+    pin_buf_putc(&b, '{');
+    pin_buf_puts(&b, "\"files\":");
+    pin_buf_printf(&b, "%d", nfiles);
+    pin_buf_puts(&b, ",\"diff\":");
+    pin_json_strn(&b, diff, len);
+    pin_buf_putc(&b, '}');
+    emit_event(a, "turn_diff", b.ptr, b.len);
+    pin_buf_free(&b);
+}
+
+/* At turn end, diff the workspace against the start-of-turn snapshot and
+ * publish a turn_diff event (agent-independent change review). */
+static void agent_emit_turn_changes(pin_agent *a) {
+    char gd[1100];
+    if (!a->active_path[0] || !agent_snapshot_git_dir(a, gd, sizeof(gd))) return;
+    pin_buf d;
+    pin_buf_init(&d);
+    if (pin_snapshot_diff(gd, a->active_path, &d) && d.len > 0) {
+        int nf = 0;
+        const char *p = d.ptr;
+        while ((p = strstr(p, "diff --git ")) != NULL) { nf++; p += 11; }
+        emit_turn_diff(a, d.ptr, d.len, nf);
+    }
+    pin_buf_free(&d);
+}
+
 static void emit_error(pin_agent *a, const char *kind, const char *msg) {
     pin_buf b;
     pin_buf_init(&b);
@@ -224,6 +265,7 @@ static void classifier_signal_turn_end(pin_agent *a) {
     if (a->state != PIN_AGENT_STATE_BUSY) return;
     a->state = PIN_AGENT_STATE_READY;
     emit_turn_end(a);
+    agent_emit_turn_changes(a);
 }
 
 /* Classify and emit one logical line (newline already stripped). A line
@@ -691,6 +733,12 @@ bool pin_agent_submit(pin_agent *a, const char *workspace_id,
     }
     a->state = PIN_AGENT_STATE_BUSY;
     a->turns_total++;
+    /* Snapshot the workspace so we can diff what this turn changes. */
+    {
+        char gd[1100];
+        if (a->active_path[0] && agent_snapshot_git_dir(a, gd, sizeof(gd)))
+            pin_snapshot_begin(gd, a->active_path);
+    }
     /* Emit the user event with exactly what the user typed. */
     emit_user(a, user_text);
     /* On the first prompt after a workspace switch, silently prepend the

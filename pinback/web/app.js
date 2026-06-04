@@ -79,6 +79,119 @@ function el(role, text) {
   return d;
 }
 
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s == null ? '' : String(s);
+  return d.innerHTML;
+}
+
+/* ---- #3 tool-call cards ---- */
+function renderToolCard(raw) {
+  const det = document.createElement('details');
+  det.className = 'toolcard';
+  const sum = document.createElement('summary');
+  let name, arg;
+  if (/^\$\s?/.test(raw)) { name = 'bash'; arg = raw.replace(/^\$\s*/, ''); }
+  else { const m = raw.match(/^(\S+)\s*([\s\S]*)$/); name = m ? m[1] : raw; arg = m ? m[2].trim() : ''; }
+  const ns = document.createElement('span'); ns.className = 'tc-name';
+  ns.textContent = '🛠️ ' + name;
+  const ar = document.createElement('span'); ar.className = 'tc-arg';
+  ar.textContent = arg;
+  sum.append(ns, ar);
+  det.appendChild(sum);
+  const body = document.createElement('div'); body.className = 'tc-body';
+  const pre = document.createElement('pre'); pre.textContent = raw;
+  body.appendChild(pre); det.appendChild(body);
+  return det;
+}
+
+/* ---- #4 per-turn change panel + per-hunk revert ---- */
+function parseDiff(text) {
+  const lines = text.split('\n');
+  const files = [];
+  let cur = null, hunk = null;
+  for (const ln of lines) {
+    if (ln.startsWith('diff --git ')) {
+      const m = ln.match(/^diff --git a\/(.*) b\/(.*)$/);
+      cur = { file: m ? m[2] : ln, header: [ln], hunks: [] };
+      files.push(cur); hunk = null;
+    } else if (!cur) {
+      continue;
+    } else if (ln.startsWith('@@')) {
+      hunk = { lines: [ln] }; cur.hunks.push(hunk);
+    } else if (hunk) {
+      hunk.lines.push(ln);
+    } else {
+      cur.header.push(ln);
+    }
+  }
+  return files;
+}
+
+function renderTurnDiff(diffText) {
+  const wrap = document.createElement('div');
+  wrap.className = 'turndiff';
+  const files = parseDiff(diffText);
+  const head = document.createElement('div');
+  head.className = 'td-head';
+  head.textContent = 'Changes this turn — ' + files.length +
+    ' file' + (files.length === 1 ? '' : 's');
+  wrap.appendChild(head);
+  for (const f of files) {
+    const det = document.createElement('details');
+    det.className = 'td-file';
+    det.open = files.length <= 3;
+    const sum = document.createElement('summary');
+    sum.textContent = f.file;
+    det.appendChild(sum);
+    for (const h of f.hunks) {
+      const hd = document.createElement('div');
+      hd.className = 'hunk';
+      const rev = document.createElement('button');
+      rev.className = 'revert';
+      rev.textContent = 'Revert hunk';
+      const patch = f.header.join('\n') + '\n' + h.lines.join('\n') + '\n';
+      rev.addEventListener('click', () => revertHunk(patch, hd, rev));
+      hd.appendChild(rev);
+      const pre = document.createElement('pre');
+      for (const ln of h.lines) {
+        const span = document.createElement('span');
+        span.className = 'dl ' + (ln[0] === '+' ? 'add' : ln[0] === '-' ? 'del' :
+          ln.startsWith('@@') ? 'hdr' : '');
+        span.textContent = ln || ' ';
+        pre.appendChild(span);
+      }
+      hd.appendChild(pre);
+      det.appendChild(hd);
+    }
+    wrap.appendChild(det);
+  }
+  return wrap;
+}
+
+async function revertHunk(patch, hunkEl, btn) {
+  if (!activeWorkspaceId) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/w/' + activeWorkspaceId + '/revert', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patch }),
+    });
+    if (r.ok) {
+      hunkEl.style.opacity = '.45';
+      btn.textContent = 'reverted';
+    } else {
+      const e = await r.json().catch(() => ({}));
+      btn.disabled = false;
+      btn.textContent = 'retry revert';
+      console.warn('revert failed', e);
+    }
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'retry revert';
+    console.warn('revert error', e);
+  }
+}
+
 function parseAssistantStream(text) {
   const out = [];
   let i = 0;
@@ -363,12 +476,20 @@ function applyEvent(env) {
         activeAssistant = null;
         activeAssistantText = '';
       }
-      const m = el('tool', '');
-      const head = document.createElement('div');
-      head.className = 'tool-head';
-      head.textContent = '🛠️ ' + raw;   // 🛠️ <tool> <params>
-      m.appendChild(head);
+      empty.style.display = 'none';
+      chat.appendChild(renderToolCard(raw));
       chat.scrollTop = chat.scrollHeight;
+      return;
+    }
+    case 'turn_diff': {
+      const p = env.payload || {};
+      if (p.diff && p.diff.trim()) chat.appendChild(renderTurnDiff(p.diff));
+      chat.scrollTop = chat.scrollHeight;
+      return;
+    }
+    case 'reverted': {
+      // A hunk was reverted (here or by another client); leave the
+      // optimistic UI in place.
       return;
     }
     case 'tool_result': {
@@ -766,6 +887,81 @@ async function pollRuntime() {
       refreshWorkspaces();
     }
   } catch (_) {}
+}
+
+/* ---- #5 cross-workspace dashboard ---- */
+const dashBtn     = document.getElementById('dash-btn');
+const dashOverlay = document.getElementById('dash-overlay');
+const dashClose   = document.getElementById('dash-close');
+const dashRows    = document.getElementById('dash-rows');
+let dashData = [];
+let dashSort = { key: 'last_active_ms', dir: -1 };
+
+function fmtAge(ms) {
+  if (!ms) return '—';
+  const s = (Date.now() - ms) / 1000;
+  if (s < 60) return Math.max(0, Math.round(s)) + 's ago';
+  if (s < 3600) return Math.round(s / 60) + 'm ago';
+  if (s < 86400) return Math.round(s / 3600) + 'h ago';
+  return Math.round(s / 86400) + 'd ago';
+}
+
+function renderDash() {
+  const k = dashSort.key, dir = dashSort.dir;
+  const rows = [...dashData].sort((a, b) => {
+    let av = k === 'preview' ? (a.last_user || '') : a[k];
+    let bv = k === 'preview' ? (b.last_user || '') : b[k];
+    if (typeof av === 'string') return dir * av.localeCompare(bv);
+    return dir * ((av || 0) - (bv || 0));
+  });
+  dashRows.innerHTML = '';
+  if (!rows.length) {
+    dashRows.innerHTML = '<tr><td colspan="4" style="color:var(--fg-mute)">No workspaces yet.</td></tr>';
+    return;
+  }
+  for (const w of rows) {
+    const tr = document.createElement('tr');
+    tr.className = 'row' + (w.active ? ' active' : '');
+    const prev = (w.last_user ? 'You: ' + w.last_user : '') +
+                 (w.last_answer ? '  ·  ' + w.last_answer : '');
+    tr.innerHTML =
+      '<td><div>' + escHtml(w.label || '(workspace)') + '</div>' +
+        '<div class="dash-prev" style="font-size:11px">' + escHtml(w.path) + '</div></td>' +
+      '<td><span class="dash-state ' + escHtml(w.state) + '">' + escHtml(w.state) + '</span></td>' +
+      '<td>' + escHtml(fmtAge(w.last_active_ms)) + '</td>' +
+      '<td><div class="dash-prev">' + escHtml(prev || '—') + '</div></td>';
+    tr.addEventListener('click', () => { dashOverlay.hidden = true; activateWorkspace(w.id); });
+    dashRows.appendChild(tr);
+  }
+}
+
+async function openDashboard() {
+  dashOverlay.hidden = false;
+  dashRows.innerHTML = '<tr><td colspan="4" style="color:var(--fg-mute)">loading…</td></tr>';
+  try {
+    const r = await fetch('/api/dashboard');
+    const j = await r.json();
+    dashData = j.workspaces || [];
+    renderDash();
+  } catch (e) {
+    dashRows.innerHTML = '<tr><td colspan="4">failed to load dashboard</td></tr>';
+  }
+}
+
+if (dashBtn) {
+  dashBtn.addEventListener('click', openDashboard);
+  dashClose.addEventListener('click', () => { dashOverlay.hidden = true; });
+  dashOverlay.addEventListener('click', (e) => {
+    if (e.target === dashOverlay) dashOverlay.hidden = true;
+  });
+  document.querySelectorAll('#dash-table th[data-sort]').forEach((th) => {
+    th.addEventListener('click', () => {
+      const k = th.dataset.sort;
+      if (dashSort.key === k) dashSort.dir *= -1;
+      else { dashSort.key = k; dashSort.dir = (k === 'last_active_ms') ? -1 : 1; }
+      renderDash();
+    });
+  });
 }
 
 ensureShiki();

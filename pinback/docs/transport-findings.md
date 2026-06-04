@@ -100,7 +100,31 @@ Consequences:
   per-token `hex=` field, flushed per token). Defer to the diff-viewer milestone;
   it works in either transport mode.
 
-## The filter (src/vterm.c) — deferred with the TUI/fast-resume path
+## `--trace` is the structured-data channel (verified)
+
+`ds4-agent --trace <file>` logs, flushed per token (`ds4_agent.c:1128`):
+- `tokens label=initial_system_prompt start=0 len=N` and
+  `tokens label=prefill_suffix ...` markers — isolate generation from prompt.
+- per-token `token index=N id=M bytes=K text="..." hex=...` — exact bytes,
+  including the raw DSML the model generated (the fullwidth `｜` appears).
+- `dsml start detected` … `dsml done calls=N` — tool-call boundaries + count.
+- tool **results** land in the next round (`prefill tool_round=1`), so bash
+  output (`hello-from-bash`) IS in the trace.
+- timestamps per line → tool-round **duration** is derivable.
+
+So full structured tool data (edit old/new, write path+content, bash command +
+output, timing) is recoverable from the trace — in any transport mode. The
+stdout pretty-render also carries more than expected: `🛠️ $ <cmd>` followed by
+the command output.
+
+**Unifying architecture (chosen for #1 + #3):** run the agent in TUI mode
+(`LINENOISE_ASSUME_TTY`, CPR reply, CR submit) with `--trace`. Read prose +
+structured tools + results from the **trace** (clean, exact); parse **stdout**
+only for `saved session`/`switched to` acks and turn-end. This gives exact,
+unbounded KV resume (`/save`+`/switch`) AND rich tool cards, with no vterm
+noise-filter. Re-prefill stays as the fallback when `/save` yields no SHA.
+
+## The filter (src/vterm.c) — superseded by the trace channel above
 
 A bounded virtual-terminal screen (grid + scrollback) that honors
 CR/LF/BS/TAB, `ESC[` A/B/C/D (cursor), G (column), H/f (position), K/J (erase),

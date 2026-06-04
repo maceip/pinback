@@ -35,6 +35,8 @@ endif()
 
 add_executable(pinback-shell WIN32 main.cpp app.manifest)
 target_include_directories(pinback-shell PRIVATE "${WV2_NATIVE}/include")
+# This is a Unicode app — all Win32 calls are the ...W variants.
+target_compile_definitions(pinback-shell PRIVATE UNICODE _UNICODE)
 
 # Size-oriented Release flags: optimize for size, function-level linking, then
 # fold/drop unreferenced code. Dynamic CRT is kept on purpose (/MT is ~10x bigger).

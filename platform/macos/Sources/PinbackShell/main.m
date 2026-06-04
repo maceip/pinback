@@ -11,6 +11,7 @@
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
 
+#include <crt_externs.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <signal.h>
@@ -85,7 +86,7 @@ static NSString *spawn_server(void) {
         NULL
     };
     pid_t pid = 0;
-    if (posix_spawn(&pid, bin.UTF8String, NULL, NULL, argv, environ) != 0) {
+    if (posix_spawn(&pid, bin.UTF8String, NULL, NULL, argv, *_NSGetEnviron()) != 0) {
         return @"http://127.0.0.1:8088";
     }
     g_server_pid = pid;

@@ -37,8 +37,18 @@ open platform/ios/Pinback.xcodeproj
 
 ```sh
 cd platform/ios
-xcodebuild -scheme Pinback -destination 'platform=iOS Simulator,name=iPhone 16' build
+./build.sh
+# or explicitly:
+xcodebuild -scheme Pinback -destination 'platform=iOS Simulator,name=iPhone 17' build
 ```
+
+List available simulators with `xcrun simctl list devices available`. Xcode 26
+ships iPhone 17 simulators by default (not iPhone 16).
+
+**Xcode note:** `Info.plist` is excluded from the synchronized `Pinback/` folder
+via `PBXFileSystemSynchronizedBuildFileExceptionSet` so Xcode does not copy it
+twice (which causes a duplicate-Info.plist build error when
+`GENERATE_INFOPLIST_FILE = NO`).
 
 iOS can't host `pinback-server` (no `ds4-agent` / 87 GB model on-device), so the
 app is a thin client onto a remote pinback. The iOS Simulator shares the Mac's

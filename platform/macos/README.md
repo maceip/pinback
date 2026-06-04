@@ -33,7 +33,7 @@ a bare `swift run` binary has none and ATS blocks it):
 
 ```sh
 cd platform/macos
-./Scripts/bundle.sh        # builds the shell + pinback-server, assembles Pinback.app
+./build.sh              # swift build + Pinback.app bundle (embeds pinback-server)
 open Pinback.app
 ```
 

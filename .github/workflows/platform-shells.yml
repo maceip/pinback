@@ -8,7 +8,7 @@ name: platform shells
 
 on:
   push:
-    branches: ["claude/platform-webview-shells-Um6v8"]
+    branches: ["main"]
     paths: ["platform/**", ".github/workflows/platform-shells.yml"]
   pull_request:
     paths: ["platform/**", ".github/workflows/platform-shells.yml"]

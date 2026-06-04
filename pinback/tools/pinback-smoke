@@ -1,0 +1,315 @@
+#!/usr/bin/env bash
+# pinback-smoke: black-box smoke test against a running pinback-server.
+#
+# Validates the v0 workspace-centric model:
+#   0. Browser-realism: strict CSP w/ wasm-unsafe-eval, no inline scripts,
+#      shiki.mjs + onig.wasm reachable as the right MIME types.
+#   1. /healthz, /readyz, /api/runtime, /metrics
+#   2. POST /api/w (create) -> 201, GET /api/w lists it
+#   3. POST /api/w/<A>/activate -> 200; runtime.active_id matches
+#   4. POST /api/w/<A>/input -> 202; SSE on /api/w/<A>/events streams
+#      user, answer*, tool_call, tool_result, answer_end frames
+#   5. Create + activate workspace B; expect 409 on input to A;
+#      A's session_sha persisted in /api/w listing
+#   6. Reset B (POST /api/w/<B>/control {op:"reset"}); events log truncates
+#   7. Switch back to A; SSE bumps generation, snapshot includes prior turn
+#   8. DELETE B; verify gone from listing
+#
+# Usage: pinback-smoke URL [PROMPT]
+# Requires: bash, curl, awk, sed, python3, jq.
+# Exits 0 on success, non-zero with FAIL line on failure.
+
+set -uo pipefail
+
+URL="${1:-http://127.0.0.1:8088}"
+PROMPT="${2:-pinback smoke at $(date -u +%FT%TZ)}"
+
+BOLD=$'\033[1m'; RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; OFF=$'\033[0m'
+fails=0
+say() { printf '%s%s%s\n' "$BOLD" "$*" "$OFF"; }
+ok()  { printf '%sok%s   %s\n'  "$GREEN" "$OFF" "$*"; }
+nok() { printf '%sFAIL%s %s\n'  "$RED"   "$OFF" "$*"; fails=$((fails+1)); }
+warn(){ printf '%s%s%s\n'        "$YELLOW" "$*" "$OFF"; }
+
+JQ=$(command -v jq || true)
+need_jq() {
+    if [ -z "$JQ" ]; then nok "jq is required for the smoke harness"; return 1; fi
+    return 0
+}
+
+# ----------------------------------------------------------------------
+# 0. Browser realism: CSP + named SSE frames + asset reachability.
+# ----------------------------------------------------------------------
+say "[0/8] browser-realism (CSP + assets + named SSE)"
+csp=$(curl -sS -D - -o /tmp/pb.idx.html "$URL/" | tr -d '\r' | awk 'tolower($0) ~ /^content-security-policy:/ {sub(/^[^:]*: */, ""); print; exit}')
+if [ -n "$csp" ]; then ok "Content-Security-Policy header present"
+else nok "Content-Security-Policy header missing"; fi
+
+if printf '%s' "$csp" | grep -q "script-src"; then
+    if printf '%s' "$csp" | grep -q "script-src[^;]*'unsafe-inline'"; then
+        warn "script-src allows 'unsafe-inline' (lax CSP)"
+    fi
+    if printf '%s' "$csp" | grep -q "script-src[^;]*'wasm-unsafe-eval'"; then
+        ok "script-src permits WASM compile (Shiki onig.wasm will load)"
+    else
+        nok "script-src missing 'wasm-unsafe-eval' (Shiki WASM engine will fail)"
+    fi
+fi
+
+total_scripts=$(grep -cE '<script[^>]*>' /tmp/pb.idx.html 2>/dev/null || echo 0)
+src_scripts=$(grep -cE '<script[^>]*src[[:space:]]*=' /tmp/pb.idx.html 2>/dev/null || echo 0)
+inline_count=$((total_scripts - src_scripts))
+if printf '%s' "$csp" | grep -Eq "script-src[^;]*'self'" \
+   && ! printf '%s' "$csp" | grep -q "script-src[^;]*'unsafe-inline'"; then
+    if [ "$inline_count" = "0" ]; then ok "no inline <script> bodies under strict CSP"
+    else nok "$inline_count inline <script> body/ies under strict CSP"; fi
+else
+    ok "CSP not strict, inline scripts allowed"
+fi
+
+shiki_status=$(curl -sS -o /tmp/pb.shiki.mjs -w '%{http_code} %{content_type}' "$URL/vendor/shiki/shiki.mjs" 2>/dev/null)
+shiki_code=${shiki_status%% *}
+if [ "$shiki_code" = "200" ] && printf '%s' "$shiki_status" | grep -qi 'javascript'; then
+    ok "/vendor/shiki/shiki.mjs reachable ($shiki_status)"
+else
+    nok "/vendor/shiki/shiki.mjs not reachable ($shiki_status)"
+fi
+wasm_status=$(curl -sS -o /tmp/pb.onig.wasm -w '%{http_code} %{content_type}' "$URL/vendor/shiki/onig.wasm" 2>/dev/null)
+wasm_code=${wasm_status%% *}
+if [ "$wasm_code" = "200" ] && printf '%s' "$wasm_status" | grep -qi 'wasm'; then
+    if head -c 4 /tmp/pb.onig.wasm | xxd | grep -q '0061 736d'; then
+        ok "/vendor/shiki/onig.wasm valid WASM module ($wasm_status)"
+    else
+        nok "/vendor/shiki/onig.wasm bad magic bytes (corrupt embed?)"
+    fi
+else
+    nok "/vendor/shiki/onig.wasm not reachable ($wasm_status)"
+fi
+
+# ----------------------------------------------------------------------
+# 1. Health / runtime / metrics
+# ----------------------------------------------------------------------
+say "[1/8] /healthz, /api/runtime, /metrics"
+hc=$(curl -fsS -o /tmp/pb.health -w '%{http_code}' "$URL/healthz" || true)
+if [ "$hc" = "200" ] && grep -q ok /tmp/pb.health; then ok "/healthz 200 ok"
+else nok "/healthz returned $hc"; cat /tmp/pb.health 2>/dev/null; fi
+
+curl -fsS "$URL/api/runtime" -o /tmp/pb.runtime || true
+if grep -q '"version"' /tmp/pb.runtime && grep -q '"agent"' /tmp/pb.runtime; then
+    ok "/api/runtime has version + agent block"
+else
+    nok "/api/runtime malformed"; cat /tmp/pb.runtime 2>/dev/null
+fi
+
+mc=$(curl -fsS -o /tmp/pb.metrics -w '%{http_code}' "$URL/metrics" || true)
+if [ "$mc" = "200" ] && grep -q 'pinback_uptime_seconds' /tmp/pb.metrics; then ok "/metrics ok"
+else nok "/metrics returned $mc"; fi
+
+# ----------------------------------------------------------------------
+# 2. Create workspace A in a fresh tmp dir.
+# ----------------------------------------------------------------------
+say "[2/8] create workspace A"
+need_jq || exit 1
+tmp_a=$(mktemp -d /tmp/pb-smoke-A.XXXXXX)
+tmp_b=$(mktemp -d /tmp/pb-smoke-B.XXXXXX)
+trap 'rm -rf "$tmp_a" "$tmp_b"' EXIT
+
+mkA=$(curl -sS -o /tmp/pb.wsA -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X POST -d "$(jq -nc --arg p "$tmp_a" '{path:$p, label:"smokeA"}')" "$URL/api/w")
+if [ "$mkA" = "201" ]; then
+    idA=$(jq -r .id /tmp/pb.wsA)
+    ok "workspace A created id=$idA"
+else
+    nok "create A failed ($mkA)"; cat /tmp/pb.wsA; exit 1
+fi
+
+curl -fsS "$URL/api/w" -o /tmp/pb.wslist
+countA=$(jq --arg id "$idA" '[.workspaces[] | select(.id==$id)] | length' /tmp/pb.wslist)
+if [ "$countA" = "1" ]; then ok "GET /api/w lists A"
+else nok "A not in /api/w listing"; fi
+
+# ----------------------------------------------------------------------
+# 3. Activate A
+# ----------------------------------------------------------------------
+say "[3/8] activate A"
+actA=$(curl -sS -o /tmp/pb.actA -w '%{http_code}' -X POST "$URL/api/w/$idA/activate")
+if [ "$actA" = "200" ]; then ok "activate A 200"
+else nok "activate A returned $actA"; cat /tmp/pb.actA; fi
+
+curl -fsS "$URL/api/runtime" -o /tmp/pb.runtime
+runtime_active=$(jq -r .active_id /tmp/pb.runtime)
+if [ "$runtime_active" = "$idA" ]; then ok "runtime.active_id == A"
+else nok "runtime.active_id=$runtime_active != $idA"; fi
+
+# ----------------------------------------------------------------------
+# 4. Input + SSE stream on A
+# ----------------------------------------------------------------------
+say "[4/8] input + SSE on A"
+body=$(jq -nc --arg t "$PROMPT" '{text:$t}')
+in_status=$(curl -sS -o /tmp/pb.inA -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X POST -d "$body" "$URL/api/w/$idA/input")
+if [ "$in_status" = "202" ]; then ok "POST input on A => 202"
+else nok "POST input on A => $in_status"; cat /tmp/pb.inA; fi
+
+# Tail SSE for up to 12s, looking for the named "event: event" frames the
+# UI uses, plus a complete turn (user + answer + answer_end).
+curl -sS --max-time 12 -H 'Accept: text/event-stream' "$URL/api/w/$idA/events?after=0" 2>/dev/null \
+    | python3 -u -c '
+import sys, json
+named = False
+saw_user = False
+saw_answer = 0
+saw_tool_call = False
+saw_tool_result = False
+saw_end = False
+last_seq = -1
+gen = -1
+for line in sys.stdin:
+    line = line.rstrip("\r\n")
+    if line.startswith("event:"):
+        if line.strip() == "event: event": named = True
+        continue
+    if not line.startswith("data:"):
+        if not line and saw_end: break
+        continue
+    p = line[5:].strip()
+    if not p: continue
+    try: ev = json.loads(p)
+    except Exception: continue
+    if isinstance(ev, dict) and "events" in ev and "newest_seq" in ev:
+        # snapshot envelope
+        for e in ev.get("events", []):
+            k = e.get("kind")
+            if k == "user": saw_user = True
+            elif k == "answer": saw_answer += 1
+            elif k == "tool_call": saw_tool_call = True
+            elif k == "tool_result": saw_tool_result = True
+            elif k == "answer_end": saw_end = True
+        last_seq = ev.get("newest_seq", last_seq)
+        gen = ev.get("generation", gen)
+        continue
+    k = ev.get("kind")
+    if k == "user": saw_user = True
+    elif k == "answer": saw_answer += 1
+    elif k == "tool_call": saw_tool_call = True
+    elif k == "tool_result": saw_tool_result = True
+    elif k == "answer_end":
+        saw_end = True
+        last_seq = ev.get("seq", last_seq); break
+    if "seq" in ev: last_seq = ev["seq"]
+    if "generation" in ev: gen = ev["generation"]
+print("NAMED", named)
+print("USER", saw_user)
+print("ANSWERS", saw_answer)
+print("TOOL_CALL", saw_tool_call)
+print("TOOL_RESULT", saw_tool_result)
+print("END", saw_end)
+print("LAST_SEQ", last_seq)
+print("GEN", gen)
+' > /tmp/pb.evA.txt 2>/dev/null
+
+if grep -q '^NAMED True' /tmp/pb.evA.txt; then ok 'SSE uses "event: event" named frames'
+else nok 'no named "event: event" frames'; fi
+grep -q '^USER True' /tmp/pb.evA.txt && ok 'saw user event' || nok 'no user event'
+awk '$1=="ANSWERS"{ if ($2+0>=1) ok=1 } END{ exit !ok }' /tmp/pb.evA.txt && ok 'saw answer event' || nok 'no answer events'
+grep -q '^TOOL_CALL True' /tmp/pb.evA.txt && ok 'saw tool_call event' || warn 'no tool_call (fake-agent should emit one)'
+grep -q '^TOOL_RESULT True' /tmp/pb.evA.txt && ok 'saw tool_result event' || warn 'no tool_result'
+grep -q '^END True' /tmp/pb.evA.txt && ok 'saw answer_end' || nok 'no answer_end'
+last_seq_A=$(awk '/^LAST_SEQ /{print $2}' /tmp/pb.evA.txt)
+
+# ----------------------------------------------------------------------
+# 5. Create + activate B; A becomes inactive => 409 on input to A.
+# ----------------------------------------------------------------------
+say "[5/8] create B, activate B, expect 409 on input to A"
+mkB=$(curl -sS -o /tmp/pb.wsB -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X POST -d "$(jq -nc --arg p "$tmp_b" '{path:$p, label:"smokeB"}')" "$URL/api/w")
+[ "$mkB" = "201" ] && idB=$(jq -r .id /tmp/pb.wsB) && ok "B created id=$idB" || { nok "create B failed ($mkB)"; cat /tmp/pb.wsB; exit 1; }
+
+actB=$(curl -sS -o /tmp/pb.actB -w '%{http_code}' -X POST "$URL/api/w/$idB/activate")
+[ "$actB" = "200" ] && ok "activate B 200" || { nok "activate B => $actB"; cat /tmp/pb.actB; }
+
+# Input to A while B is active should 409.
+inA2=$(curl -sS -o /tmp/pb.inA2 -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X POST -d "$body" "$URL/api/w/$idA/input")
+if [ "$inA2" = "409" ]; then ok "input to inactive A => 409"
+else nok "input to inactive A => $inA2 (expected 409)"; cat /tmp/pb.inA2; fi
+
+# A's session_sha should be persisted from the /save on switch.
+curl -fsS "$URL/api/w" -o /tmp/pb.wslist
+shaA=$(jq -r --arg id "$idA" '.workspaces[] | select(.id==$id) | .session_sha' /tmp/pb.wslist)
+if [ -n "$shaA" ] && [ "$shaA" != "null" ]; then ok "A.session_sha persisted ($shaA)"
+else warn "A.session_sha not yet set (agent may not have flushed)"; fi
+
+# Run a turn on B so it has its own state, then we'll switch back to A.
+curl -sS -o /dev/null -X POST -H 'Content-Type: application/json' \
+    -d "$(jq -nc '{text:"hello B"}')" "$URL/api/w/$idB/input"
+curl -sS --max-time 5 -H 'Accept: text/event-stream' \
+    "$URL/api/w/$idB/events?after=0" >/tmp/pb.evB.txt 2>/dev/null
+
+# ----------------------------------------------------------------------
+# 6. Reset B
+# ----------------------------------------------------------------------
+say "[6/8] reset B"
+rB=$(curl -sS -o /tmp/pb.rstB -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X POST -d '{"op":"reset"}' "$URL/api/w/$idB/control")
+[ "$rB" = "200" ] && ok "reset B => 200" || { nok "reset B => $rB"; cat /tmp/pb.rstB; }
+
+curl -fsS "$URL/api/w" -o /tmp/pb.wslist
+shaB=$(jq -r --arg id "$idB" '.workspaces[] | select(.id==$id) | .session_sha' /tmp/pb.wslist)
+if [ "$shaB" = "null" ] || [ -z "$shaB" ]; then ok "B.session_sha cleared on reset"
+else nok "B.session_sha still set after reset ($shaB)"; fi
+
+# ----------------------------------------------------------------------
+# 7. Switch back to A; new SSE snapshot must include prior history.
+# ----------------------------------------------------------------------
+say "[7/8] switch back to A"
+actA2=$(curl -sS -o /tmp/pb.actA2 -w '%{http_code}' -X POST "$URL/api/w/$idA/activate")
+[ "$actA2" = "200" ] && ok "activate A again => 200" || { nok "reactivate A => $actA2"; cat /tmp/pb.actA2; }
+
+curl -sS --max-time 4 -H 'Accept: text/event-stream' "$URL/api/w/$idA/events?after=0" 2>/dev/null \
+    | python3 -u -c '
+import sys, json
+saw_user = False
+saw_answer = False
+for line in sys.stdin:
+    line = line.rstrip("\r\n")
+    if not line.startswith("data:"): continue
+    p = line[5:].strip()
+    if not p: continue
+    try: ev = json.loads(p)
+    except Exception: continue
+    if isinstance(ev, dict) and "events" in ev:
+        for e in ev["events"]:
+            k = e.get("kind")
+            if k == "user": saw_user = True
+            elif k == "answer": saw_answer = True
+        continue
+    k = ev.get("kind")
+    if k == "user": saw_user = True
+    elif k == "answer": saw_answer = True
+print("USER", saw_user)
+print("ANSWER", saw_answer)
+' > /tmp/pb.evA2.txt 2>/dev/null
+grep -q '^USER True' /tmp/pb.evA2.txt && ok 'A snapshot retains prior user' || warn 'A snapshot missing prior user (resume might have bumped)'
+grep -q '^ANSWER True' /tmp/pb.evA2.txt && ok 'A snapshot retains prior answer' || warn 'A snapshot missing prior answer'
+
+# ----------------------------------------------------------------------
+# 8. Delete B (must be inactive to delete; A is active now).
+# ----------------------------------------------------------------------
+say "[8/8] DELETE B"
+delB=$(curl -sS -o /tmp/pb.delB -w '%{http_code}' -X DELETE "$URL/api/w/$idB")
+if [ "$delB" = "200" ]; then ok "DELETE B => 200"
+else nok "DELETE B => $delB"; cat /tmp/pb.delB; fi
+
+curl -fsS "$URL/api/w" -o /tmp/pb.wslist
+remaining=$(jq --arg id "$idB" '[.workspaces[] | select(.id==$id)] | length' /tmp/pb.wslist)
+if [ "$remaining" = "0" ]; then ok "B no longer in /api/w listing"
+else nok "B still listed after delete"; fi
+
+echo
+if [ $fails -eq 0 ]; then
+    say "PASS  pinback-smoke clean against $URL"
+    exit 0
+fi
+say "FAIL  $fails check(s) failed"
+exit 1

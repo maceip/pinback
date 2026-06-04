@@ -4,7 +4,6 @@
 /.runtime/
 /target/
 /dist/
-/release-artifacts/
 *.log
 *.pid
 .DS_Store

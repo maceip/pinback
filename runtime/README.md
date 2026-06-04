@@ -11,4 +11,10 @@ Separate subsystem for owned DS4 runtime profiles, web PTY bridge, and prototype
 | `ds4_bucket0_live_smoke.sh` | Bucket 0 live acceptance |
 | `test_ds4_webpty_supervisor.py` | Supervisor regression tests |
 
+Runtime bridge expects a built UI at `runtime/ui/dist/` (gitignored). Build with:
+
+```sh
+cd runtime/ui && bun install && bun run build
+```
+
 Not embedded in `build/pinback-server`. See `docs/operations/ds4-runtime-cockpit.md`.

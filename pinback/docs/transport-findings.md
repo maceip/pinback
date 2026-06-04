@@ -117,7 +117,31 @@ output, timing) is recoverable from the trace — in any transport mode. The
 stdout pretty-render also carries more than expected: `🛠️ $ <cmd>` followed by
 the command output.
 
-## KV resume (`--kv-resume`) — status: mechanism works, prose extraction rough
+## Hybrid transport (`--kv-resume`, current) — prose from --trace
+
+The vterm prose-extraction problem is solved by sourcing prose from the
+structured `--trace` channel instead of un-rendering the TUI screen:
+
+- **Prose + thinking + tool calls** come from a trace-tailer thread
+  (`src/tracestream.c`): it skips prefill tokens (`tokens label start/len`),
+  splits reasoning at `</think>`, and surfaces raw DSML tool blocks. Verified
+  live: clean answers + thinking, no banner garbage. The UI shows thinking
+  muted and renders the raw DSML in the structured tool panel.
+- **stdin (pty/CR)** is the command channel: prompts, `/save`, `/switch`.
+- **stdout** is used only to answer CPR, detect the boot/idle status, and
+  scan raw bytes for `saved session`/`switched to` SHA acks.
+- **Continuity is reliable** via transcript re-prefill; KV `/save`+`/switch`
+  is the *opportunistic fast path*. Verified live: after switch-away and
+  back, the agent recalled a fact set before the switch.
+
+Known rough edge: the KV `/save` ack is captured inconsistently (ds4-agent
+defers some saves to "a stable append-only point", so `saved session <sha>`
+may not arrive within the wait window). When it misses, the hybrid falls
+through to re-prefill -- continuity is preserved either way, just not instant.
+Making the fast path engage reliably is a tuning item (longer/again-on-defer
+save, or detecting the deferred-save completion).
+
+## (historical) KV resume via vterm — superseded by the trace tailer above
 
 Implemented behind the `--kv-resume` flag (default OFF). Verified live:
 - TUI spawn (`LINENOISE_ASSUME_TTY`) + CPR reply + CR submit boots and runs.

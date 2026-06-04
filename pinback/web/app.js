@@ -56,6 +56,8 @@ let workspaces = [];
 
 let activeAssistant = null;
 let activeAssistantText = '';
+let activeThinking = null;
+let activeThinkingText = '';
 let lastSeq = -1;
 let knownGeneration = -1;
 let es = null;
@@ -464,10 +466,17 @@ function applyEvent(env) {
       chat.scrollTop = chat.scrollHeight;
       return;
     }
+    case 'thinking': {
+      const t = env.payload && env.payload.text || '';
+      if (!activeThinking) { activeThinking = el('thinking', ''); activeThinkingText = ''; }
+      activeThinkingText += t;
+      activeThinking.textContent = '💭 ' + activeThinkingText;
+      chat.scrollTop = chat.scrollHeight;
+      return;
+    }
     case 'tool_call': {
-      // The real ds4-agent renders tool actions as a wrench-prefixed line
-      // (no raw DSML), which the server delivers as a tool_call event with
-      // the rendered text in payload.raw. Show it as a tool-activity chip.
+      // KV mode delivers the raw DSML block (from --trace) -> rich structured
+      // panel. Clean transport delivers a "🛠️ tool args" line -> simple card.
       const p = env.payload || {};
       const raw = (p.raw || '').trim();
       if (!raw) return;
@@ -477,7 +486,16 @@ function applyEvent(env) {
         activeAssistantText = '';
       }
       empty.style.display = 'none';
-      chat.appendChild(renderToolCard(raw));
+      if (raw.indexOf(DSML_OPEN) !== -1 || raw.indexOf('｜DSML｜invoke') !== -1) {
+        const ci = raw.indexOf(DSML_CLOSE);
+        const bs = raw.indexOf(DSML_OPEN);
+        const body = bs === -1 ? raw
+          : raw.slice(bs + DSML_OPEN.length, ci === -1 ? raw.length : ci);
+        const bubble = el('assistant', '');
+        appendDsmlBlock(bubble, { kind: 'dsml', open: ci === -1, invokes: parseDsmlInvokes(body) });
+      } else {
+        chat.appendChild(renderToolCard(raw));
+      }
       chat.scrollTop = chat.scrollHeight;
       return;
     }
@@ -529,6 +547,8 @@ function applyEvent(env) {
       const wasAborted = env.payload && env.payload.aborted;
       activeAssistant = null;
       activeAssistantText = '';
+      activeThinking = null;        // next turn starts a fresh thinking block
+      activeThinkingText = '';
       busy = false;
       sendBtn.hidden = false;
       stopBtn.hidden = true;

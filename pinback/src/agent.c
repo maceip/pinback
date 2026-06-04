@@ -3,6 +3,7 @@
 #include "event_log.h"
 #include "log.h"
 #include "snapshot.h"
+#include "tracestream.h"
 #include "util.h"
 #include "vterm.h"
 #include "workspace.h"
@@ -61,7 +62,16 @@ struct pin_agent {
     pin_vterm      *vt;
     size_t          vt_lines;
     bool            saw_turn_activity;   /* status left "idle" this turn */
+    bool            booted;              /* TUI reached its first idle prompt */
+    char            sha_carry[160];      /* carry-over for raw-stdout SHA scan */
+    size_t          sha_carry_len;
     pthread_mutex_t stdin_mu;            /* serialize writes to child stdin */
+
+    /* Prose comes from ds4-agent's --trace (clean tokens), not the noisy
+     * TUI stdout. A tailer thread parses the trace file and emits events. */
+    char            trace_path[1200];
+    pthread_t       trace_reader;
+    bool            trace_running;
 
     /* /save SHA capture (TUI mode): the reader scans content for
      * "saved session <sha>" and signals the waiting switch. */
@@ -149,6 +159,23 @@ static void emit_prose(pin_agent *a, const char *text, size_t len) {
     pin_json_strn(&b, cleaned.ptr, cleaned.len);
     pin_buf_putc(&b, '}');
     emit_event(a, "answer", b.ptr, b.len);
+    pin_buf_free(&b);
+    pin_buf_free(&cleaned);
+}
+
+static void emit_thinking(pin_agent *a, const char *text, size_t len) {
+    if (!len) return;
+    pin_buf cleaned;
+    pin_buf_init(&cleaned);
+    pin_text_sanitize(&cleaned, text, len, MAX_PROSE_FLUSH);
+    if (cleaned.len == 0) { pin_buf_free(&cleaned); return; }
+    pin_buf b;
+    pin_buf_init(&b);
+    pin_buf_putc(&b, '{');
+    pin_buf_puts(&b, "\"text\":");
+    pin_json_strn(&b, cleaned.ptr, cleaned.len);
+    pin_buf_putc(&b, '}');
+    emit_event(a, "thinking", b.ptr, b.len);
     pin_buf_free(&b);
     pin_buf_free(&cleaned);
 }
@@ -317,6 +344,42 @@ static void capture_session_sha(pin_agent *a, const char *line, size_t n) {
     sha_scan_after(a, line, n, "switched to session ");
 }
 
+static bool is_hexc(char c) {
+    return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+/* Find "<prefix><hex>" anywhere in a raw stdout buffer and latch the SHA.
+ * Robust to the surrounding TUI escape noise -- the ack text itself is
+ * printed contiguously. */
+static void capture_sha_in_buf(pin_agent *a, const char *s, size_t n) {
+    static const char *pfx[2] = { "saved session ", "switched to session " };
+    for (int k = 0; k < 2; k++) {
+        size_t plen = strlen(pfx[k]);
+        const char *p = s;
+        size_t left = n;
+        while (left >= plen) {
+            const char *hit = memmem(p, left, pfx[k], plen);
+            if (!hit) break;
+            const char *h = hit + plen;
+            size_t avail = (size_t)(s + n - h);
+            size_t j = 0;
+            while (j < avail && is_hexc(h[j])) j++;
+            if (j >= 6 && j <= 40) {
+                pthread_mutex_lock(&a->sha_mu);
+                size_t take = j < sizeof(a->captured_sha) - 1 ? j : sizeof(a->captured_sha) - 1;
+                memcpy(a->captured_sha, h, take);
+                a->captured_sha[take] = '\0';
+                a->sha_pending = false;
+                pthread_cond_broadcast(&a->sha_cv);
+                pthread_mutex_unlock(&a->sha_mu);
+                pin_workspace_store_set_session_sha(a->ws, a->active_id, a->captured_sha);
+            }
+            p = hit + plen;
+            left = (size_t)(s + n - p);
+        }
+    }
+}
+
 /* Classify and emit one logical line (newline already stripped). A line
  * that begins with the wrench glyph is a tool action; everything else is
  * prose. `had_newline` is true for a complete line (we re-attach the
@@ -387,6 +450,71 @@ typedef struct {
     pin_agent *a;
 } reader_args;
 
+/* ====================================================================
+ * Trace tailer -- the prose source in KV mode.
+ *
+ * ds4-agent's --trace logs every token with exact bytes, flushed per
+ * token. pin_tracestream parses it into clean answer/thinking/tool_call
+ * events (prefill skipped, "</think>" split, raw DSML surfaced). This is
+ * why KV mode no longer needs to un-render prose from the TUI screen.
+ * ==================================================================== */
+
+static void trace_cb_answer(void *ud, const char *t, size_t n) {
+    emit_prose((pin_agent *)ud, t, n);
+}
+static void trace_cb_thinking(void *ud, const char *t, size_t n) {
+    emit_thinking((pin_agent *)ud, t, n);
+}
+static void trace_cb_tool(void *ud, const char *raw, size_t n) {
+    emit_dsml_tool_call((pin_agent *)ud, raw, n);
+}
+static void trace_cb_turn(void *ud) { (void)ud; }
+
+static void *trace_reader_fn(void *arg) {
+    pin_agent *a = ((reader_args *)arg)->a;
+    free(arg);
+    FILE *f = NULL;
+    for (int i = 0; i < 400 && a->trace_running && !f; i++) {
+        f = fopen(a->trace_path, "rb");
+        if (!f) usleep(25 * 1000);
+    }
+    pin_tracestream *ts = NULL;
+    if (f) {
+        pin_tracestream_cb cb = {
+            .ud = a, .on_answer = trace_cb_answer, .on_thinking = trace_cb_thinking,
+            .on_tool_call = trace_cb_tool, .on_turn = trace_cb_turn,
+        };
+        ts = pin_tracestream_new(cb);
+    }
+    char *line = NULL;
+    size_t cap = 0;
+    long long last_data = (long long)pin_monotonic_ms();
+    bool flushed = true;
+    while (f && ts && a->trace_running) {
+        ssize_t n = getline(&line, &cap, f);
+        if (n > 0) {
+            pin_tracestream_feed_line(ts, line, (size_t)n);
+            last_data = (long long)pin_monotonic_ms();
+            flushed = false;
+        } else {
+            clearerr(f);
+            if (!flushed && (long long)pin_monotonic_ms() - last_data > 250) {
+                pin_tracestream_flush(ts);
+                flushed = true;
+            }
+            usleep(20 * 1000);
+        }
+    }
+    if (ts) { pin_tracestream_flush(ts); pin_tracestream_free(ts); }
+    if (f) fclose(f);
+    free(line);
+    pthread_mutex_lock(&a->mu);
+    a->trace_running = false;
+    pthread_cond_broadcast(&a->cv);
+    pthread_mutex_unlock(&a->mu);
+    return NULL;
+}
+
 /* Reply to a linenoise cursor-position-report request so the TUI does not
  * hang. Bypasses stdin_write_line (no terminator). 8 bytes -> atomic. */
 static void tui_reply_cpr(pin_agent *a, int count) {
@@ -399,40 +527,45 @@ static void tui_reply_cpr(pin_agent *a, int count) {
     pthread_mutex_unlock(&a->stdin_mu);
 }
 
-/* KV (TUI) mode: feed raw bytes through the vterm, answer CPR, emit newly
- * stable content lines to the classifier, and derive turn-end from the
- * status footer returning to "idle". A content line is "stable" once a
- * newer line exists below it; the final line is flushed at turn-end. */
+/* KV (TUI) mode stdout handling. Prose is no longer read from here -- the
+ * trace tailer owns that. The vterm is kept only to (1) answer CPR so the
+ * TUI doesn't hang, (2) read the status footer for turn-end, and (3) let
+ * us scan content for the "saved session"/"switched to" SHA acks. */
 static void tui_process(pin_agent *a, const char *buf, size_t n, bool flush) {
     int cpr = pin_vterm_feed(a->vt, buf, n);
     if (cpr) tui_reply_cpr(a, cpr);
+
+    /* Latch session-SHA acks from the raw stdout (carry-over across read
+     * chunks). The ack text is contiguous, so this is immune to the TUI
+     * redraw noise. */
+    if (n > 0) {
+        char scan[160 + 4096];
+        size_t cl = a->sha_carry_len > sizeof(a->sha_carry) ?
+                    sizeof(a->sha_carry) : a->sha_carry_len;
+        memcpy(scan, a->sha_carry, cl);
+        size_t take = n < 4096 ? n : 4096;
+        memcpy(scan + cl, buf, take);
+        size_t tot = cl + take;
+        capture_sha_in_buf(a, scan, tot);
+        size_t keep = tot < 120 ? tot : 120;
+        memcpy(a->sha_carry, scan + tot - keep, keep);
+        a->sha_carry_len = keep;
+    }
 
     char st[32];
     pin_vterm_status(a->vt, st, sizeof(st));
     bool nonidle = st[0] && strcmp(st, "idle") != 0;
     if (nonidle) a->saw_turn_activity = true;
-    bool turn_ending = !nonidle && a->saw_turn_activity &&
-                       a->state == PIN_AGENT_STATE_BUSY;
-
-    pin_buf full;
-    pin_buf_init(&full);
-    pin_vterm_content(a->vt, &full);
-    size_t nlines = 0;
-    for (size_t i = 0; i < full.len; i++) if (full.ptr[i] == '\n') nlines++;
-    size_t stable = (nlines > 0 && !turn_ending && !flush) ? nlines - 1 : nlines;
-
-    size_t li = 0, line_start = 0;
-    for (size_t i = 0; i < full.len; i++) {
-        if (full.ptr[i] != '\n') continue;
-        if (li >= a->vt_lines && li < stable)
-            classifier_emit_line(a, full.ptr + line_start, i - line_start, true);
-        li++;
-        line_start = i + 1;
+    /* First idle prompt = the agent finished loading. Lock-free set +
+     * broadcast (taking a->mu here could deadlock with an activate that
+     * holds it while draining readers). */
+    if (!nonidle && st[0] && !a->booted) {
+        a->booted = true;
+        pthread_cond_broadcast(&a->cv);
     }
-    if (stable > a->vt_lines) a->vt_lines = stable;
-    pin_buf_free(&full);
+    (void)flush;
 
-    if (turn_ending) {
+    if (!nonidle && a->saw_turn_activity && a->state == PIN_AGENT_STATE_BUSY) {
         a->saw_turn_activity = false;
         classifier_signal_turn_end(a);
     }
@@ -525,6 +658,17 @@ static void *stderr_reader(void *arg) {
  * ==================================================================== */
 
 static bool spawn_child_locked(pin_agent *a, const char *path) {
+    /* KV mode: each spawn gets a fresh trace file (truncate; ds4-agent
+     * opens it append-mode) which the tailer reads from offset 0. */
+    a->trace_path[0] = '\0';
+    if (a->cfg.kv_resume) {
+        char wsd[1024];
+        if (pin_workspace_store_ws_dir(a->ws, a->active_id, wsd, sizeof(wsd))) {
+            snprintf(a->trace_path, sizeof(a->trace_path), "%s/agent-trace.log", wsd);
+            FILE *tf = fopen(a->trace_path, "wb");
+            if (tf) fclose(tf);
+        }
+    }
     int in_pipe[2] = {-1, -1};
     int out_pipe[2] = {-1, -1};
     int err_pipe[2] = {-1, -1};
@@ -614,6 +758,10 @@ static bool spawn_child_locked(pin_agent *a, const char *path) {
             argv[ai++] = (char *)"--model";
             argv[ai++] = (char *)a->cfg.model_path;
         }
+        if (a->cfg.kv_resume && a->trace_path[0]) {
+            argv[ai++] = (char *)"--trace";
+            argv[ai++] = (char *)a->trace_path;
+        }
         argv[ai] = NULL;
         execvp(argv[0], argv);
         /* If exec fails, write to stderr_pipe so parent logs it. */
@@ -635,6 +783,7 @@ static bool spawn_child_locked(pin_agent *a, const char *path) {
         a->vt = pin_vterm_new(200, 24);
         a->vt_lines = 0;
         a->saw_turn_activity = false;
+        a->booted = false;
     }
 
     reader_args *ra1 = pin_xcalloc(1, sizeof(*ra1)); ra1->a = a;
@@ -652,6 +801,17 @@ static bool spawn_child_locked(pin_agent *a, const char *path) {
     pthread_detach(a->reader);
     pthread_detach(a->err_reader);
 
+    if (a->cfg.kv_resume && a->trace_path[0]) {
+        reader_args *ra3 = pin_xcalloc(1, sizeof(*ra3)); ra3->a = a;
+        a->trace_running = true;
+        if (pthread_create(&a->trace_reader, NULL, trace_reader_fn, ra3) != 0) {
+            a->trace_running = false;
+            free(ra3);
+        } else {
+            pthread_detach(a->trace_reader);
+        }
+    }
+
     PIN_LOG_INFOF("agent.spawn", "pid=%d path=%s", (int)pid, path);
     return true;
 }
@@ -668,7 +828,7 @@ static void wait_reader_threads(pin_agent *a) {
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += 2;
-    while ((a->reader_running || a->err_running)) {
+    while ((a->reader_running || a->err_running || a->trace_running)) {
         if (pthread_cond_timedwait(&a->cv, &a->mu, &ts) != 0) break;
     }
 }
@@ -677,6 +837,7 @@ static bool kill_child_locked(pin_agent *a, int term_timeout_ms) {
     if (a->child_pid <= 0) return true;
     pid_t pgid = -a->child_pid;
     kill(pgid, SIGTERM);
+    a->trace_running = false;   /* tell the trace tailer to exit */
     /* Close stdin so the agent's read loop exits naturally. */
     if (a->child_stdin >= 0) { close(a->child_stdin); a->child_stdin = -1; }
     long long deadline = (long long)pin_monotonic_ms() + term_timeout_ms;
@@ -869,9 +1030,21 @@ bool pin_agent_activate(pin_agent *a, const char *workspace_id, char **out_err) 
      * agent finishes loading). Otherwise -- and always in non-KV mode --
      * fall back to transcript re-prefill on the next prompt. */
     if (a->cfg.kv_resume && meta.session_sha && *meta.session_sha) {
+        /* A /switch sent before the agent finishes loading is lost, so
+         * wait for its first idle prompt, then restore the KV session. */
+        long ms = a->cfg.spawn_ready_ms > 0 ? a->cfg.spawn_ready_ms : 30000;
+        long long deadline = (long long)pin_monotonic_ms() + ms;
+        while (!a->booted && (long long)pin_monotonic_ms() < deadline) {
+            struct timespec ts;
+            clock_gettime(CLOCK_REALTIME, &ts);
+            ts.tv_nsec += 200 * 1000000L;
+            if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+            pthread_cond_timedwait(&a->cv, &a->mu, &ts);
+        }
         char cmd[128];
         snprintf(cmd, sizeof(cmd), "/switch %s", meta.session_sha);
         stdin_write_line(a, cmd);
+        usleep(1000 * 1000);   /* let /switch load the KV before any prompt */
     } else {
         build_pending_resume(a, meta.id);
     }

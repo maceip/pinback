@@ -277,73 +277,168 @@ function parseDsmlParams(body) {
   return params;
 }
 
+function dsmlParam(inv, name) {
+  const p = inv.params.find((x) => x.name === name);
+  return p ? p.value : null;
+}
+
+/* Line-level diff: common prefix/suffix held as context, the changed middle
+ * shown as removed (left) vs added (right). Good enough for typical edits. */
+function lineDiffRows(oldText, newText) {
+  const o = (oldText || '').replace(/\n+$/, '').split('\n');
+  const n = (newText || '').replace(/\n+$/, '').split('\n');
+  let p = 0;
+  while (p < o.length && p < n.length && o[p] === n[p]) p++;
+  let s = 0;
+  while (s < o.length - p && s < n.length - p &&
+         o[o.length - 1 - s] === n[n.length - 1 - s]) s++;
+  const rows = [];
+  for (let i = 0; i < p; i++) rows.push({ l: o[i], r: o[i], t: 'ctx' });
+  const oMid = o.slice(p, o.length - s);
+  const nMid = n.slice(p, n.length - s);
+  const mx = Math.max(oMid.length, nMid.length);
+  for (let i = 0; i < mx; i++)
+    rows.push({ l: i < oMid.length ? oMid[i] : null,
+                r: i < nMid.length ? nMid[i] : null, t: 'chg' });
+  for (let i = 0; i < s; i++) {
+    const li = o.length - s + i;
+    rows.push({ l: o[li], r: o[li], t: 'ctx' });
+  }
+  return rows;
+}
+
+function renderEditDiff(oldText, newText) {
+  const tbl = document.createElement('table');
+  tbl.className = 'tc-diff';
+  for (const row of lineDiffRows(oldText, newText)) {
+    const tr = document.createElement('tr');
+    const lc = document.createElement('td');
+    lc.className = 'tc-l' + (row.t === 'chg' && row.l != null ? ' del' : '');
+    lc.textContent = row.l == null ? '' : (row.l || ' ');
+    const rc = document.createElement('td');
+    rc.className = 'tc-r' + (row.t === 'chg' && row.r != null ? ' add' : '');
+    rc.textContent = row.r == null ? '' : (row.r || ' ');
+    tr.append(lc, rc);
+    tbl.appendChild(tr);
+  }
+  return tbl;
+}
+
+function renderToolBody(inv) {
+  const body = document.createElement('div');
+  body.className = 'dsml-body';
+  const name = inv.name;
+  if (name === 'edit') {
+    const path = dsmlParam(inv, 'path');
+    const old = dsmlParam(inv, 'old');
+    const neu = dsmlParam(inv, 'new');
+    if (path) { const h = document.createElement('div'); h.className = 'tc-path'; h.textContent = path; body.appendChild(h); }
+    if (old != null && neu != null) { body.appendChild(renderEditDiff(old, neu)); return body; }
+  } else if (name === 'bash') {
+    const cmd = dsmlParam(inv, 'command');
+    const term = document.createElement('div');
+    term.className = 'tc-term';
+    const c = document.createElement('div');
+    c.className = 'tc-cmd';
+    c.textContent = '$ ' + (cmd || '');
+    term.appendChild(c);
+    if (inv.output != null) {
+      const pre = document.createElement('pre');
+      pre.className = 'tc-out';
+      pre.textContent = inv.output;
+      term.appendChild(pre);
+    }
+    body.appendChild(term);
+    return body;
+  } else if (name === 'write' || name === 'create') {
+    const path = dsmlParam(inv, 'path');
+    const content = dsmlParam(inv, 'content') || dsmlParam(inv, 'contents');
+    if (path) { const h = document.createElement('div'); h.className = 'tc-path'; h.textContent = path; body.appendChild(h); }
+    if (content != null) {
+      const pre = document.createElement('pre');
+      pre.className = 'dsml-pre';
+      const code = document.createElement('code');
+      code.textContent = content;
+      pre.appendChild(code);
+      body.appendChild(pre);
+    }
+    return body;
+  } else if (name === 'read') {
+    const path = dsmlParam(inv, 'path');
+    const h = document.createElement('div');
+    h.className = 'tc-path';
+    h.textContent = path || '';
+    body.appendChild(h);
+    return body;
+  }
+  /* generic: params table */
+  if (inv.params.length === 0) {
+    const ph = document.createElement('div');
+    ph.className = 'dsml-empty';
+    ph.textContent = inv.open ? 'streaming\u2026' : '(no parameters)';
+    body.appendChild(ph);
+  } else {
+    const tbl = document.createElement('table');
+    tbl.className = 'dsml-params';
+    for (const p of inv.params) {
+      const tr = document.createElement('tr');
+      const k = document.createElement('td');
+      k.className = 'dsml-pname';
+      k.textContent = p.name;
+      const v = document.createElement('td');
+      v.className = 'dsml-pvalue';
+      const multiline = p.value.indexOf('\n') !== -1 || p.value.length > 80;
+      if (multiline) {
+        const pre = document.createElement('pre');
+        pre.className = 'dsml-pre';
+        const code = document.createElement('code');
+        code.textContent = p.value;
+        pre.appendChild(code);
+        v.appendChild(pre);
+      } else {
+        const code = document.createElement('code');
+        code.className = 'dsml-inline';
+        code.textContent = p.value;
+        v.appendChild(code);
+      }
+      tr.append(k, v);
+      tbl.appendChild(tr);
+    }
+    body.appendChild(tbl);
+  }
+  return body;
+}
+
+/* Short subtitle for the card header: the path / command at a glance. */
+function toolSubtitle(inv) {
+  if (inv.name === 'bash') return dsmlParam(inv, 'command') || '';
+  return dsmlParam(inv, 'path') || '';
+}
+
 function appendDsmlBlock(bubble, dsml) {
   const wrap = document.createElement('div');
   wrap.className = 'dsml' + (dsml.open ? ' dsml-open' : '');
   for (const inv of dsml.invokes) {
     const det = document.createElement('details');
     det.className = 'dsml-invoke' + (inv.open ? ' dsml-streaming' : '');
-    det.open = false;
+    det.open = !inv.open && (inv.name === 'edit');   // expand edits by default
     const sum = document.createElement('summary');
     sum.className = 'dsml-summary';
     const tag = document.createElement('span');
     tag.className = 'dsml-tag';
-    tag.textContent = 'tool';
+    tag.textContent = inv.name === 'bash' ? '$' : '\ud83d\udee0';   // \ud83d\udee0
     const nameEl = document.createElement('span');
     nameEl.className = 'dsml-name';
     nameEl.textContent = inv.name || '(unnamed)';
+    const subEl = document.createElement('span');
+    subEl.className = 'dsml-sub';
+    subEl.textContent = toolSubtitle(inv);
     const status = document.createElement('span');
     status.className = 'dsml-status';
-    status.textContent = inv.open ? '\u2026' : '';
-    sum.appendChild(tag);
-    sum.appendChild(nameEl);
-    sum.appendChild(status);
+    status.textContent = inv.open ? '\u27f3 running' : '\u2713';
+    sum.append(tag, nameEl, subEl, status);
     det.appendChild(sum);
-
-    const body = document.createElement('div');
-    body.className = 'dsml-body';
-    if (inv.params.length === 0) {
-      const ph = document.createElement('div');
-      ph.className = 'dsml-empty';
-      ph.textContent = inv.open ? 'streaming\u2026' : '(no parameters)';
-      body.appendChild(ph);
-    } else {
-      const tbl = document.createElement('table');
-      tbl.className = 'dsml-params';
-      for (const p of inv.params) {
-        const tr = document.createElement('tr');
-        const k = document.createElement('td');
-        k.className = 'dsml-pname';
-        k.textContent = p.name;
-        const v = document.createElement('td');
-        v.className = 'dsml-pvalue';
-        const multiline = p.value.indexOf('\n') !== -1 || p.value.length > 80;
-        if (multiline) {
-          const pre = document.createElement('pre');
-          pre.className = 'dsml-pre';
-          const codeEl = document.createElement('code');
-          codeEl.textContent = p.value;
-          pre.appendChild(codeEl);
-          v.appendChild(pre);
-        } else {
-          const codeEl = document.createElement('code');
-          codeEl.className = 'dsml-inline';
-          codeEl.textContent = p.value;
-          v.appendChild(codeEl);
-        }
-        if (p.open) {
-          const dot = document.createElement('span');
-          dot.className = 'dsml-streaming-dot';
-          dot.textContent = '\u2026';
-          v.appendChild(dot);
-        }
-        tr.appendChild(k);
-        tr.appendChild(v);
-        tbl.appendChild(tr);
-      }
-      body.appendChild(tbl);
-    }
-    det.appendChild(body);
+    det.appendChild(renderToolBody(inv));
     wrap.appendChild(det);
   }
   if (dsml.invokes.length === 0) {

@@ -21,7 +21,7 @@ let package = Package(
             linkerSettings: [
                 .linkedFramework("Cocoa"),
                 .linkedFramework("WebKit"),
-                .unsafeFlags(["-Wl,-dead_strip"])
+                .unsafeFlags(["-Xlinker", "-dead_strip"])
             ]
         )
     ]

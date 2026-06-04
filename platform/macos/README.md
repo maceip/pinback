@@ -10,6 +10,7 @@ whole shell is ~25 lines.
 ```
 macos/
 ├── Package.swift                         # SwiftPM executable, macOS 26 platform
+├── Scripts/bundle.sh                     # wrap the binary into a Pinback.app
 └── Sources/PinbackShell/PinbackShellApp.swift   # the entire app
 ```
 
@@ -29,9 +30,17 @@ swift run                                  # builds and launches the window
 PINBACK_URL=http://127.0.0.1:18192 swift run
 ```
 
-`swift run` produces a runnable AppKit/SwiftUI app. To ship a proper `.app`
-bundle with an icon/entitlements, open `Package.swift` in Xcode 26 and archive,
-or wrap the built binary in a minimal bundle.
+`swift run` produces a runnable AppKit/SwiftUI app and is fine for quick
+iteration. But a bare binary has no `Info.plist`, so App Transport Security will
+block the plain-http dev server. To get a proper bundle (with ATS allowing local
+networking):
+
+```sh
+./Scripts/bundle.sh        # builds release + assembles Pinback.app
+open Pinback.app
+```
+
+For an icon/entitlements/signing, open `Package.swift` in Xcode 26 and archive.
 
 ## Notes
 

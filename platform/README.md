@@ -64,5 +64,13 @@ The net rule: on Linux you either bundle Chromium or you depend on the
 distro-provided WebKitGTK. To honor "don't bundle the engine", we depend on
 WebKitGTK.
 
+## Continuous integration
+
+`.github/workflows/platform-shells.yml` compiles the **Linux**, **Windows**, and
+**Android** shells on native GitHub runners, so they get real build coverage
+without a local toolchain. **macOS** and **iOS** are not built in CI: they need
+the macOS 26 / iOS 26 SDK (Xcode 26 beta) for the new SwiftUI `WebView`, which
+hosted runners don't ship yet — build those locally with Xcode 26.
+
 See each subdirectory's `README.md` for build/run instructions and the exact
 newest-library version notes.

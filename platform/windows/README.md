@@ -10,7 +10,9 @@ which Windows keeps updated — so the engine is not bundled. The only glue is
 ```
 windows/
 ├── main.cpp          # the entire shell (~90 lines)
+├── app.manifest      # per-monitor-v2 DPI + UTF-8 active code page
 ├── CMakeLists.txt    # fetches the WebView2 SDK from NuGet via FetchContent
+├── build.bat         # one-shot configure + build convenience wrapper
 └── README.md
 ```
 
@@ -29,7 +31,11 @@ windows/
 
 ```bat
 cd platform\windows
-cmake -S . -B build -A x64
+build.bat                          REM or the explicit commands below
+```
+
+```bat
+cmake -S . -B build -A x64         REM -A x86 or -A arm64 also supported
 cmake --build build --config Release
 set PINBACK_URL=http://127.0.0.1:18192
 build\Release\pinback-shell.exe
@@ -37,8 +43,12 @@ build\Release\pinback-shell.exe
 
 ## Notes
 
-- No engine is bundled; the static WebView2 loader (`WebView2LoaderStatic.lib`)
-  means there is no `WebView2Loader.dll` to ship beside the exe either.
+- No engine is bundled; WebView2 uses the system Edge runtime.
+- **Loader**: by default CMake links the import lib and copies `WebView2Loader.dll`
+  next to the exe (reliable across CRT settings). For a single-file deploy with no
+  DLL, configure with `-DWEBVIEW2_STATIC_LOADER=ON` to link
+  `WebView2LoaderStatic.lib` instead.
+- Architecture is auto-selected from `-A` (`x64` default, also `x86`/`arm64`).
 - Default URL is `http://127.0.0.1:18192` (the cockpit dev server on this
   machine); override with the `PINBACK_URL` environment variable.
 - To track a newer SDK: `cmake -S . -B build -DWEBVIEW2_VERSION=<x.y.z>`.

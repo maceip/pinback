@@ -45,8 +45,9 @@ cd platform/android
 
 On the emulator the default URL is `http://10.0.2.2:18192` — `10.0.2.2` is the
 emulator's alias for the host loopback, so it reaches the cockpit dev server on
-your machine. `usesCleartextTraffic="true"` permits the plain-http dev server.
-Override at build time by editing the `PINBACK_URL` `buildConfigField`.
+your machine. `res/xml/network_security_config.xml` permits plain http only to
+the loopback hosts (everything else stays https-only). Override the URL at build
+time by editing the `PINBACK_URL` `buildConfigField`.
 
 ## Notes
 

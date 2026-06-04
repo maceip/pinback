@@ -10,8 +10,12 @@
 		PB0000000000000000000006 /* Pinback.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Pinback.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		PB0000000000000000000010 /* Exceptions for "Pinback" folder in "Pinback" target */ = {isa = PBXFileSystemSynchronizedBuildFileExceptionSet; membershipExceptions = (Info.plist, ); target = PB0000000000000000000005 /* Pinback */; };
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		PB0000000000000000000004 /* Pinback */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Pinback; sourceTree = "<group>"; };
+		PB0000000000000000000004 /* Pinback */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (PB0000000000000000000010 /* Exceptions for "Pinback" folder in "Pinback" target */, ); explicitFileTypes = {}; explicitFolders = (); path = Pinback; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */

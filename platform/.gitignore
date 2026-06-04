@@ -3,6 +3,7 @@
 # Swift / SwiftPM (macos, ios)
 .build/
 .swiftpm/
+macos/Pinback.app/
 *.xcuserstate
 xcuserdata/
 DerivedData/

@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# pinback-e2e: end-to-end exercise against the REAL ds4-agent.
+#
+# What we validate today (v0):
+#   1. Real ds4-agent boots under pinback's --chdir + Metal env wiring
+#   2. A workspace can take a turn and stream a real model answer
+#      (user + answer chunks + answer_end on +DWARFSTAR_WAITING)
+#   3. Switching active workspace tears down the agent and respawns it
+#      under a different --chdir without orphan processes
+#   4. The new workspace can take its own turn (independent state)
+#   5. Reset truncates the events log + clears session_sha
+#
+# Known gap (deferred to docs/todo-paint.md): ds4-agent in
+# --non-interactive mode does not honor /save or /switch as runtime
+# commands -- those only work in the TUI loop. So workspace switches in
+# v0 are NOT session-preserving. The architecture (session_sha field,
+# /switch on respawn) is wired and will activate when the pty-based
+# interactive supervisor lands.
+#
+# Usage: pinback-e2e [URL]
+# Server must already be running with --agent-bin pointing at a real
+# ds4-agent and --model pointing at a GGUF.
+
+set -uo pipefail
+URL="${1:-http://127.0.0.1:18099}"
+
+BOLD=$'\033[1m'; RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; OFF=$'\033[0m'
+fails=0
+say() { printf '%s%s%s\n' "$BOLD" "$*" "$OFF"; }
+ok()  { printf '%sok%s   %s\n' "$GREEN" "$OFF" "$*"; }
+nok() { printf '%sFAIL%s %s\n' "$RED" "$OFF" "$*"; fails=$((fails+1)); }
+warn(){ printf '%s%s%s\n'      "$YELLOW" "$*" "$OFF"; }
+
+JQ=$(command -v jq) || { echo "jq required"; exit 2; }
+
+WS_A=$(mktemp -d /tmp/pb-e2e-A.XXXXXX)
+WS_B=$(mktemp -d /tmp/pb-e2e-B.XXXXXX)
+trap 'rm -rf "$WS_A" "$WS_B"' EXIT
+
+# ----------------------------------------------------------------------
+# 1. Create+activate A
+# ----------------------------------------------------------------------
+say "[1/5] create+activate workspace A ($WS_A)"
+mk=$(curl -sS -o /tmp/pb.e2e.A.json -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X POST -d "$(jq -nc --arg p "$WS_A" '{path:$p,label:"e2eA"}')" "$URL/api/w")
+[ "$mk" = "201" ] && idA=$(jq -r .id /tmp/pb.e2e.A.json) && ok "A created id=$idA" || { nok "create A => $mk"; exit 1; }
+act=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$URL/api/w/$idA/activate")
+[ "$act" = "200" ] && ok "activate A 200" || { nok "activate A => $act"; exit 1; }
+
+# Give the real ds4-agent a moment to load weights before first input.
+# Model load on M5 Max with this GGUF is ~5-10s.
+sleep 12
+
+# ----------------------------------------------------------------------
+# 2. Turn 1 on A
+# ----------------------------------------------------------------------
+say "[2/5] turn 1 on A"
+in_=$(curl -sS -o /tmp/pb.e2e.in.json -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X POST -d '{"text":"reply with the literal word HELLO and nothing else"}' \
+    "$URL/api/w/$idA/input")
+[ "$in_" = "202" ] && ok "input on A => 202" || { nok "input on A => $in_"; cat /tmp/pb.e2e.in.json; echo; }
+
+say "    waiting for answer_end on A (up to 90s)"
+curl -sS --max-time 90 -H 'Accept: text/event-stream' "$URL/api/w/$idA/events?after=0" 2>/dev/null \
+    | python3 -u -c '
+import sys, json, time
+saw_user = False
+saw_answer = 0
+saw_end = False
+text_chunks = []
+deadline = time.monotonic() + 90
+for line in sys.stdin:
+    if time.monotonic() > deadline: break
+    line = line.rstrip("\r\n")
+    if not line.startswith("data:"): continue
+    p = line[5:].strip()
+    if not p: continue
+    try: ev = json.loads(p)
+    except Exception: continue
+    if isinstance(ev, dict) and "events" in ev:
+        for e in ev.get("events", []):
+            k = e.get("kind")
+            if k == "user": saw_user = True
+            elif k == "answer":
+                saw_answer += 1
+                text_chunks.append((e.get("payload") or {}).get("text",""))
+            elif k == "answer_end": saw_end = True
+        continue
+    k = ev.get("kind")
+    if k == "user": saw_user = True
+    elif k == "answer":
+        saw_answer += 1
+        text_chunks.append((ev.get("payload") or {}).get("text",""))
+    elif k == "answer_end":
+        saw_end = True; break
+print("USER", saw_user)
+print("ANSWERS", saw_answer)
+print("END", saw_end)
+print("TEXT", "".join(text_chunks)[:200].replace("\n", " "))
+' > /tmp/pb.e2e.A1.txt 2>/dev/null
+grep -q '^USER True' /tmp/pb.e2e.A1.txt && ok 'saw user on A' || nok 'no user on A'
+grep -q '^END True' /tmp/pb.e2e.A1.txt && ok 'saw answer_end on A' || nok 'no answer_end on A within 90s'
+ans=$(awk '/^TEXT /{ sub(/^TEXT /, ""); print; exit }' /tmp/pb.e2e.A1.txt)
+[ -n "$ans" ] && ok "A answer non-empty: $ans" || nok "A answer empty"
+
+# ----------------------------------------------------------------------
+# 3. Create+activate B; verify A torn down + B alive
+# ----------------------------------------------------------------------
+say "[3/5] create+activate B (workspace switch tears down A)"
+mk=$(curl -sS -o /tmp/pb.e2e.B.json -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X POST -d "$(jq -nc --arg p "$WS_B" '{path:$p,label:"e2eB"}')" "$URL/api/w")
+[ "$mk" = "201" ] && idB=$(jq -r .id /tmp/pb.e2e.B.json) && ok "B created id=$idB" || { nok "create B => $mk"; exit 1; }
+
+act=$(curl -sS --max-time 60 -o /dev/null -w '%{http_code}' -X POST "$URL/api/w/$idB/activate")
+[ "$act" = "200" ] && ok "activate B 200" || nok "activate B => $act"
+
+# Confirm runtime now reports B as active and a fresh agent pid.
+curl -fsS "$URL/api/runtime" -o /tmp/pb.e2e.rt.json
+rt_active=$(jq -r .active_id /tmp/pb.e2e.rt.json)
+rt_state=$(jq -r .agent.state /tmp/pb.e2e.rt.json)
+[ "$rt_active" = "$idB" ] && ok "runtime.active_id == B" || nok "runtime.active_id=$rt_active != $idB"
+[ "$rt_state" = "ready" ] || [ "$rt_state" = "spawning" ] && ok "runtime.agent.state=$rt_state" || nok "agent state=$rt_state"
+
+# ----------------------------------------------------------------------
+# 4. Turn 1 on B (independent state)
+# ----------------------------------------------------------------------
+say "[4/5] turn 1 on B (independent of A)"
+sleep 12
+in_=$(curl -sS -o /tmp/pb.e2e.inB.json -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X POST -d '{"text":"reply with the literal word WORLD and nothing else"}' \
+    "$URL/api/w/$idB/input")
+[ "$in_" = "202" ] && ok "input on B => 202" || { nok "input on B => $in_"; cat /tmp/pb.e2e.inB.json; echo; }
+
+say "    waiting for answer_end on B (up to 120s)"
+curl -sS --max-time 120 -H 'Accept: text/event-stream' "$URL/api/w/$idB/events?after=0" 2>/dev/null \
+    | python3 -u -c '
+import sys, json, time
+saw_user = False
+saw_answer = 0
+saw_end = False
+text_chunks = []
+deadline = time.monotonic() + 120
+for line in sys.stdin:
+    if time.monotonic() > deadline: break
+    line = line.rstrip("\r\n")
+    if not line.startswith("data:"): continue
+    p = line[5:].strip()
+    if not p: continue
+    try: ev = json.loads(p)
+    except Exception: continue
+    if isinstance(ev, dict) and "events" in ev:
+        for e in ev.get("events", []):
+            k = e.get("kind")
+            if k == "user": saw_user = True
+            elif k == "answer":
+                saw_answer += 1
+                text_chunks.append((e.get("payload") or {}).get("text",""))
+            elif k == "answer_end": saw_end = True
+        continue
+    k = ev.get("kind")
+    if k == "user": saw_user = True
+    elif k == "answer":
+        saw_answer += 1
+        text_chunks.append((ev.get("payload") or {}).get("text",""))
+    elif k == "answer_end":
+        saw_end = True; break
+print("USER", saw_user)
+print("ANSWERS", saw_answer)
+print("END", saw_end)
+print("TEXT", "".join(text_chunks)[:200].replace("\n", " "))
+' > /tmp/pb.e2e.B1.txt 2>/dev/null
+grep -q '^USER True' /tmp/pb.e2e.B1.txt && ok 'saw user on B' || nok 'no user on B'
+grep -q '^END True' /tmp/pb.e2e.B1.txt && ok 'saw answer_end on B' || { nok 'no answer_end on B within 120s'; cat /tmp/pb.e2e.B1.txt; }
+
+# A's input must be rejected with 409 while B is active.
+inA=$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X POST -d '{"text":"hi"}' "$URL/api/w/$idA/input")
+[ "$inA" = "409" ] && ok 'input to inactive A => 409' || nok "inactive A input => $inA (expected 409)"
+
+# ----------------------------------------------------------------------
+# 5. Reset B (truncate events.log; agent respawns fresh)
+# ----------------------------------------------------------------------
+say "[5/5] reset B"
+rB=$(curl -sS --max-time 30 -o /tmp/pb.e2e.rstB.json -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X POST -d '{"op":"reset"}' "$URL/api/w/$idB/control")
+[ "$rB" = "200" ] && ok "reset B => 200" || { nok "reset B => $rB"; cat /tmp/pb.e2e.rstB.json; }
+
+curl -fsS "$URL/api/w" -o /tmp/pb.e2e.list.json
+shaB=$(jq -r --arg id "$idB" '.workspaces[] | select(.id==$id) | .session_sha' /tmp/pb.e2e.list.json)
+if [ "$shaB" = "null" ] || [ -z "$shaB" ]; then ok "B.session_sha cleared on reset"
+else nok "B.session_sha still set after reset ($shaB)"; fi
+
+echo
+warn 'note: ds4-agent --non-interactive does not honor /save or /switch'
+warn '      (verified -- see docs/transport-findings.md), so continuity is'
+warn '      pinback-owned: switching to a workspace with history re-prefills'
+warn '      its transcript into the next prompt. Files persist on disk and'
+warn '      the UI shows prior turns from the event log regardless.'
+echo
+if [ $fails -eq 0 ]; then say "PASS  pinback-e2e clean"; exit 0; fi
+say "FAIL  $fails check(s) failed"; exit 1

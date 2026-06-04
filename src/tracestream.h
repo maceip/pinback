@@ -12,7 +12,7 @@
  *   - raw DSML tool-call blocks in the answer are surfaced separately.
  *
  * Verified against a real trace: generation tokens reconstruct the exact
- * prose (see docs/transport-findings.md). Single-channel, structured --
+ * prose (see docs/architecture/transport-findings.md). Single-channel, structured --
  * this replaces un-rendering prose from the noisy TUI stdout. */
 
 #include "util.h"

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pinback.ds4-runtime</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>python3</string>
+    <string>REPO_ROOT/runtime/ds4_runtime_supervisor.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/mac/pinback</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/mac/pinback/.runtime/ds4-supervisor/launchd.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/mac/pinback/.runtime/ds4-supervisor/launchd.err.log</string>
+</dict>
+</plist>

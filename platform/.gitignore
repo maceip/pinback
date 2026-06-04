@@ -32,3 +32,4 @@ windows/packages/
 
 # Misc
 .DS_Store
+platform/linux/.cache/

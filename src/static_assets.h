@@ -3,8 +3,8 @@
 
 /* Embedded static UI assets.
  *
- * The build embeds web/index.html, web/app.js, and web/app.css as
- * read-only byte arrays via tools/gen-static-assets.sh + xxd. At
+ * The build embeds ui/app/index.html, ui/app/app.js, and vendor assets as
+ * read-only byte arrays via scripts/embed/gen-static-assets.sh + xxd. At
  * runtime, --web-dir DIR overrides the embedded copy so iteration
  * does not require a recompile. */
 

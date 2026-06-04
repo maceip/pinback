@@ -11,22 +11,71 @@
 //   - Otherwise the shell IS the launcher: it spawns the bundled
 //     `pinback-server.exe` child on 127.0.0.1:8088, waits for /healthz, then
 //     loads it, and terminates the child on window close.
+//
+// Sugar (Windows 11, 2026):
+//   - Mica system backdrop (DWMWA_SYSTEMBACKDROP_TYPE / DWMSBT_MAINWINDOW) and a
+//     dark/light caption that follows the OS theme live (DWMWA_USE_IMMERSIVE_DARK
+//     _MODE, re-applied on WM_SETTINGCHANGE). All DWM calls are build-gated: they
+//     no-op (failed HRESULT, ignored) on Windows 10 / pre-22621.
+//   - The WebView2 is given a transparent default background and its
+//     PreferredColorScheme follows the OS, so content/scrollbars/dialogs theme
+//     correctly and the Mica can show through any transparent page regions.
+//   - A native menubar carries app controls: a *Workspaces* menu rebuilt live
+//     from the cockpit (it posts its workspace list over chrome.webview), and a
+//     *View* menu (Previous workspace / Reload / Theme). Selecting a workspace
+//     drives window.pinback.selectWorkspace() back in the page.
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+#include <dwmapi.h>
 #include <wrl.h>
 #include <string>
+#include <vector>
 #include "WebView2.h"
 
 #pragma comment(lib, "Advapi32.lib")  // registry
 #pragma comment(lib, "Ole32.lib")     // COM
 #pragma comment(lib, "ws2_32.lib")
+#pragma comment(lib, "Dwmapi.lib")    // Mica / dark mode
+
+// Some of these may be absent in older Windows SDK headers; define fallbacks so
+// the shell still builds. The runtime call is gated separately at execution.
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
+#ifndef DWMWA_SYSTEMBACKDROP_TYPE
+#define DWMWA_SYSTEMBACKDROP_TYPE 38
+#endif
+#ifndef DWMSBT_MAINWINDOW
+#define DWMSBT_MAINWINDOW 2
+#endif
 
 using namespace Microsoft::WRL;
 
 static ComPtr<ICoreWebView2Controller> g_controller;
 static ComPtr<ICoreWebView2> g_webview;
 static HANDLE g_server = nullptr;
+
+// Native menubar state.
+static HMENU g_menubar = nullptr;
+static HMENU g_viewMenu = nullptr;
+static HMENU g_wsMenu = nullptr;
+static std::vector<std::wstring> g_wsIds;   // menu index -> workspace id
+static bool g_canGoBack = false;
+static EventRegistrationToken g_msgToken = {};
+
+// Theme override the user can pick from the View menu (Auto follows the OS).
+enum ThemeMode { THEME_AUTO = 0, THEME_LIGHT = 1, THEME_DARK = 2 };
+static ThemeMode g_theme = THEME_AUTO;
+
+enum : UINT {
+    ID_VIEW_BACK = 100,
+    ID_VIEW_RELOAD,
+    ID_THEME_AUTO,
+    ID_THEME_LIGHT,
+    ID_THEME_DARK,
+    ID_WS_BASE = 1000,   // workspace items: ID_WS_BASE + index
+};
 
 static constexpr int kPort = 8088;
 
@@ -96,6 +145,210 @@ static void StopServer() {
     }
 }
 
+// ----------------------------------------------------------------------------
+// Theme: Mica backdrop + dark/light caption following the OS (or a manual View
+// override), plus WebView2 PreferredColorScheme. Every DWM call is best-effort.
+// ----------------------------------------------------------------------------
+static bool SystemUsesDark() {
+    HKEY h;
+    DWORD v = 1, cb = sizeof(v), type = 0;
+    if (RegOpenKeyExW(HKEY_CURRENT_USER,
+            L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+            0, KEY_READ, &h) == ERROR_SUCCESS) {
+        RegQueryValueExW(h, L"AppsUseLightTheme", nullptr, &type, (LPBYTE)&v, &cb);
+        RegCloseKey(h);
+    }
+    return v == 0;   // AppsUseLightTheme: 0 = dark, 1 = light
+}
+
+static void ApplyTheme(HWND hWnd) {
+    const bool dark = (g_theme == THEME_AUTO) ? SystemUsesDark()
+                                              : (g_theme == THEME_DARK);
+
+    BOOL useDark = dark ? TRUE : FALSE;
+    DwmSetWindowAttribute(hWnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &useDark, sizeof(useDark));
+
+    int backdrop = DWMSBT_MAINWINDOW;   // Mica behind the whole window
+    DwmSetWindowAttribute(hWnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop, sizeof(backdrop));
+
+    if (g_webview) {
+        ComPtr<ICoreWebView2_13> w13;
+        if (SUCCEEDED(g_webview.As(&w13)) && w13) {
+            ComPtr<ICoreWebView2Profile> prof;
+            if (SUCCEEDED(w13->get_Profile(&prof)) && prof) {
+                COREWEBVIEW2_PREFERRED_COLOR_SCHEME scheme =
+                    (g_theme == THEME_AUTO) ? COREWEBVIEW2_PREFERRED_COLOR_SCHEME_AUTO
+                  : (g_theme == THEME_DARK) ? COREWEBVIEW2_PREFERRED_COLOR_SCHEME_DARK
+                                            : COREWEBVIEW2_PREFERRED_COLOR_SCHEME_LIGHT;
+                prof->put_PreferredColorScheme(scheme);
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// Native menubar.
+// ----------------------------------------------------------------------------
+static void BuildMenuBar(HWND hWnd) {
+    g_menubar = CreateMenu();
+
+    g_wsMenu = CreatePopupMenu();   // populated live from the cockpit
+    AppendMenuW(g_wsMenu, MF_GRAYED, 0, L"(loading…)");
+    AppendMenuW(g_menubar, MF_POPUP, (UINT_PTR)g_wsMenu, L"&Workspaces");
+
+    g_viewMenu = CreatePopupMenu();
+    AppendMenuW(g_viewMenu, MF_STRING | MF_GRAYED, ID_VIEW_BACK, L"Previous workspace");
+    AppendMenuW(g_viewMenu, MF_STRING, ID_VIEW_RELOAD, L"&Reload");
+    AppendMenuW(g_viewMenu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuW(g_viewMenu, MF_STRING, ID_THEME_AUTO,  L"Theme: System");
+    AppendMenuW(g_viewMenu, MF_STRING, ID_THEME_LIGHT, L"Theme: Light");
+    AppendMenuW(g_viewMenu, MF_STRING, ID_THEME_DARK,  L"Theme: Dark");
+    CheckMenuRadioItem(g_viewMenu, ID_THEME_AUTO, ID_THEME_DARK, ID_THEME_AUTO, MF_BYCOMMAND);
+    AppendMenuW(g_menubar, MF_POPUP, (UINT_PTR)g_viewMenu, L"&View");
+
+    SetMenu(hWnd, g_menubar);
+}
+
+// Minimal JSON string reader: s[i] must be at the opening quote; returns the
+// unescaped value and leaves i just past the closing quote. Robust to the
+// backslashes Windows paths produce ("\\") and to \uXXXX.
+static std::wstring JsonStr(const std::wstring& s, size_t& i) {
+    std::wstring out;
+    if (i >= s.size() || s[i] != L'"') return out;
+    ++i;
+    while (i < s.size() && s[i] != L'"') {
+        wchar_t c = s[i++];
+        if (c == L'\\' && i < s.size()) {
+            wchar_t e = s[i++];
+            switch (e) {
+                case L'n': out += L'\n'; break;
+                case L't': out += L'\t'; break;
+                case L'r': out += L'\r'; break;
+                case L'b': out += L'\b'; break;
+                case L'f': out += L'\f'; break;
+                case L'u': {
+                    wchar_t code = 0;
+                    for (int k = 0; k < 4 && i < s.size(); ++k) {
+                        wchar_t hgt = s[i++]; code <<= 4;
+                        if (hgt >= L'0' && hgt <= L'9') code |= (hgt - L'0');
+                        else if (hgt >= L'a' && hgt <= L'f') code |= (10 + hgt - L'a');
+                        else if (hgt >= L'A' && hgt <= L'F') code |= (10 + hgt - L'A');
+                    }
+                    out += code; break;
+                }
+                default: out += e; break;   // \" \\ \/ and any other
+            }
+        } else {
+            out += c;
+        }
+    }
+    if (i < s.size() && s[i] == L'"') ++i;
+    return out;
+}
+
+static void SkipWs(const std::wstring& s, size_t& i) {
+    while (i < s.size() && (s[i] == L' ' || s[i] == L'\t' || s[i] == L'\n' ||
+                            s[i] == L'\r' || s[i] == L':' || s[i] == L',')) ++i;
+}
+
+struct WsEntry { std::wstring id, label; };
+
+// Parse the {type:'workspaces', activeId, canGoBack, workspaces:[{id,label,path}]}
+// frame the page posts. Key lookups are token searches (our keys are distinctive);
+// each workspace object holds only string values, so no nesting handling needed.
+static void ParseWorkspaceMessage(const std::wstring& s,
+                                  std::vector<WsEntry>& out,
+                                  std::wstring& activeId, bool& canGoBack) {
+    out.clear(); activeId.clear(); canGoBack = false;
+
+    if (size_t p = s.find(L"\"activeId\""); p != std::wstring::npos) {
+        p += 10; SkipWs(s, p);
+        if (p < s.size() && s[p] == L'"') activeId = JsonStr(s, p);
+    }
+    if (size_t p = s.find(L"\"canGoBack\""); p != std::wstring::npos) {
+        p += 11; SkipWs(s, p);
+        canGoBack = (s.compare(p, 4, L"true") == 0);
+    }
+    size_t p = s.find(L"\"workspaces\"");
+    if (p == std::wstring::npos) return;
+    p += 12; SkipWs(s, p);
+    if (p >= s.size() || s[p] != L'[') return;
+    ++p;
+    while (p < s.size()) {
+        SkipWs(s, p);
+        if (p < s.size() && s[p] == L']') break;
+        if (p < s.size() && s[p] == L'{') {
+            ++p;
+            WsEntry w;
+            while (p < s.size() && s[p] != L'}') {
+                SkipWs(s, p);
+                if (p < s.size() && s[p] == L'"') {
+                    std::wstring key = JsonStr(s, p);
+                    SkipWs(s, p);
+                    std::wstring val = (p < s.size() && s[p] == L'"') ? JsonStr(s, p) : L"";
+                    if (key == L"id") w.id = val;
+                    else if (key == L"label") w.label = val;
+                } else if (p < s.size() && s[p] != L'}') {
+                    ++p;
+                }
+            }
+            if (p < s.size() && s[p] == L'}') ++p;
+            if (!w.id.empty()) out.push_back(w);
+        } else {
+            ++p;   // unexpected token; skip
+        }
+    }
+}
+
+static void OnWorkspacesMessage(HWND hWnd, const std::wstring& json) {
+    std::vector<WsEntry> list;
+    std::wstring activeId;
+    ParseWorkspaceMessage(json, list, activeId, g_canGoBack);
+
+    // Rebuild the Workspaces popup from scratch.
+    HMENU fresh = CreatePopupMenu();
+    g_wsIds.clear();
+    if (list.empty()) {
+        AppendMenuW(fresh, MF_GRAYED, 0, L"(no workspaces)");
+    } else {
+        int activeIdx = -1;
+        for (size_t k = 0; k < list.size(); ++k) {
+            const std::wstring text = list[k].label.empty() ? list[k].id : list[k].label;
+            AppendMenuW(fresh, MF_STRING, ID_WS_BASE + (UINT)k, text.c_str());
+            if (list[k].id == activeId) activeIdx = (int)k;
+            g_wsIds.push_back(list[k].id);
+        }
+        if (activeIdx >= 0)
+            CheckMenuRadioItem(fresh, 0, (UINT)list.size() - 1, (UINT)activeIdx, MF_BYPOSITION);
+    }
+    ModifyMenuW(g_menubar, 0, MF_BYPOSITION | MF_POPUP, (UINT_PTR)fresh, L"&Workspaces");
+    if (g_wsMenu) DestroyMenu(g_wsMenu);
+    g_wsMenu = fresh;
+
+    EnableMenuItem(g_viewMenu, ID_VIEW_BACK,
+                   MF_BYCOMMAND | (g_canGoBack ? MF_ENABLED : MF_GRAYED));
+    DrawMenuBar(hWnd);
+}
+
+static std::wstring JsEscape(const std::wstring& s) {
+    std::wstring o;
+    for (wchar_t c : s) {
+        if (c == L'\\' || c == L'\'') { o += L'\\'; o += c; }
+        else if (c == L'\n') o += L"\\n";
+        else if (c == L'\r') {}
+        else o += c;
+    }
+    return o;
+}
+
+static void RunPinback(const std::wstring& call) {
+    if (!g_webview) return;
+    const std::wstring js = L"window.pinback&&window.pinback." + call;
+    g_webview->ExecuteScript(js.c_str(),
+        Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+            [](HRESULT, LPCWSTR) -> HRESULT { return S_OK; }).Get());
+}
+
 using CreateWebViewEnvironmentWithOptionsInternal_t = HRESULT(STDMETHODCALLTYPE *)(
     bool, int, PCWSTR, IUnknown *,
     ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler *);
@@ -159,6 +412,31 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
             g_controller->put_Bounds(bounds);
         }
         return 0;
+    case WM_COMMAND: {
+        const UINT id = LOWORD(wParam);
+        if (id >= ID_WS_BASE && id < ID_WS_BASE + (UINT)g_wsIds.size()) {
+            RunPinback(L"selectWorkspace('" + JsEscape(g_wsIds[id - ID_WS_BASE]) + L"')");
+            return 0;
+        }
+        switch (id) {
+        case ID_VIEW_BACK:   RunPinback(L"back()"); return 0;
+        case ID_VIEW_RELOAD: if (g_webview) g_webview->Reload(); return 0;
+        case ID_THEME_AUTO:  case ID_THEME_LIGHT: case ID_THEME_DARK:
+            g_theme = (id == ID_THEME_AUTO) ? THEME_AUTO
+                    : (id == ID_THEME_LIGHT) ? THEME_LIGHT : THEME_DARK;
+            CheckMenuRadioItem(g_viewMenu, ID_THEME_AUTO, ID_THEME_DARK, id, MF_BYCOMMAND);
+            ApplyTheme(hWnd);
+            return 0;
+        }
+        return 0;
+    }
+    case WM_SETTINGCHANGE:
+        if (g_theme == THEME_AUTO && lParam &&
+            CompareStringOrdinal(reinterpret_cast<LPCWSTR>(lParam), -1,
+                                 L"ImmersiveColorSet", -1, TRUE) == CSTR_EQUAL) {
+            ApplyTheme(hWnd);
+        }
+        return 0;
     case WM_DESTROY:
         StopServer();
         PostQuitMessage(0);
@@ -183,6 +461,9 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
         0, kClass, L"Pinback", WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, 1280, 800,
         nullptr, nullptr, hInstance, nullptr);
+
+    BuildMenuBar(hWnd);    // before ShowWindow so the client rect excludes the bar
+    ApplyTheme(hWnd);      // Mica + dark caption up front (best-effort on Win10)
     ShowWindow(hWnd, nCmdShow);
 
     wchar_t urlBuf[2048];
@@ -203,6 +484,31 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
                             if (!controller) return S_OK;
                             g_controller = controller;
                             g_controller->get_CoreWebView2(&g_webview);
+
+                            // Transparent backdrop so Mica can show through any
+                            // transparent page regions; pre-Controller2 runtimes
+                            // simply skip this.
+                            ComPtr<ICoreWebView2Controller2> c2;
+                            if (SUCCEEDED(g_controller.As(&c2)) && c2) {
+                                COREWEBVIEW2_COLOR clear = { 0, 0, 0, 0 };  // A,R,G,B
+                                c2->put_DefaultBackgroundColor(clear);
+                            }
+
+                            // web -> native: workspace list / active / canGoBack.
+                            g_webview->add_WebMessageReceived(
+                                Callback<ICoreWebView2WebMessageReceivedEventHandler>(
+                                    [hWnd](ICoreWebView2*,
+                                           ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
+                                        LPWSTR json = nullptr;
+                                        if (SUCCEEDED(args->get_WebMessageAsJson(&json)) && json) {
+                                            OnWorkspacesMessage(hWnd, json);
+                                            CoTaskMemFree(json);
+                                        }
+                                        return S_OK;
+                                    }).Get(), &g_msgToken);
+
+                            ApplyTheme(hWnd);   // now that g_webview exists, set color scheme too
+
                             RECT bounds;
                             GetClientRect(hWnd, &bounds);
                             g_controller->put_Bounds(bounds);

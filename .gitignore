@@ -4,26 +4,27 @@
 /.runtime/
 /target/
 /dist/
+/release-artifacts/
 *.log
 *.pid
 .DS_Store
 
-# Build outputs
+# Build outputs (out-of-tree)
+/build/
 *.o
 *.tmp
-/pinback-server
-/tools/fake-ds4-agent
-/tests/run_tests
 
-# Transport probe: throwaway diagnostics + large captures + venv
-tools/transport-probe/.venv/
-tools/transport-probe/capture/
-tools/transport-probe/__pycache__/
-tools/transport-probe/*.bin
-tools/transport-probe/run-*.log
+# UI toolchain (npm deps for Shiki bundle regeneration)
+ui/shiki-bundle/node_modules/
 
-# Web build toolchain (npm deps used to regenerate web/vendor/ Shiki bundle)
-web-build/node_modules/
+# Runtime / experiments scratch
+experiments/transport-probe/.venv/
+experiments/transport-probe/capture/
+experiments/transport-probe/__pycache__/
+experiments/transport-probe/*.bin
+experiments/transport-probe/run-*.log
+runtime/ui/node_modules/
+runtime/ui/dist/
 
-# Runtime / misc
+# Python
 __pycache__/

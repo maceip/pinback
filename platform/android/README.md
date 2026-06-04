@@ -39,8 +39,15 @@ android/
 
 ```sh
 cd platform/android
-./gradlew assembleDebug                 # builds app/build/outputs/apk/debug/app-debug.apk
-./gradlew installDebug                  # install to a running emulator/device
+./build.sh                  # or: ./build.sh release
+./gradlew installDebug      # install to a running emulator/device
+```
+
+On a Windows build host (SSH CI machine):
+
+```bat
+cd platform\android
+build.bat debug
 ```
 
 Android can't host `pinback-server` (no `ds4-agent` / 87 GB model on the phone),

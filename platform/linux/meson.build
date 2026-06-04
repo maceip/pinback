@@ -4,16 +4,19 @@ project('pinback-shell', 'c',
   # is a system shared lib, so the executable itself is only our glue + stubs.
   default_options : ['c_std=c11', 'warning_level=2', 'buildtype=minsize', 'b_lto=true'])
 
-# Both dependencies are resolved from the system via pkg-config — the WebKit
-# engine is NOT bundled. Install the distro dev packages first:
-#   Debian/Ubuntu : libgtk-4-dev libwebkitgtk-6.0-dev
-#   Fedora        : gtk4-devel webkitgtk6.0-devel
-#   Arch          : gtk4 webkitgtk-6.0
+# All dependencies are resolved from the system via pkg-config — neither the
+# WebKit engine nor libadwaita is bundled. libadwaita is a thin (~3-5 MB),
+# universally-packaged styling layer on top of GTK 4, not a vendored engine.
+# Install the distro dev packages first:
+#   Debian/Ubuntu : libgtk-4-dev libwebkitgtk-6.0-dev libadwaita-1-dev
+#   Fedora        : gtk4-devel webkitgtk6.0-devel libadwaita-devel
+#   Arch          : gtk4 webkitgtk-6.0 libadwaita
 gtk    = dependency('gtk4')
 webkit = dependency('webkitgtk-6.0')
+adw    = dependency('libadwaita-1')
 
 executable('pinback-shell', 'main.c',
-  dependencies : [gtk, webkit],
+  dependencies : [gtk, webkit, adw],
   # Drop unreferenced sections, over-linked libs, and symbols for a smaller binary.
   c_args : ['-ffunction-sections', '-fdata-sections'],
   link_args : ['-Wl,--gc-sections', '-Wl,--as-needed', '-s'],

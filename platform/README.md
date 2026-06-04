@@ -93,3 +93,38 @@ See each subdirectory's `README.md` for build/run instructions and the exact
 newest-library version notes, and [`SIZE.md`](./SIZE.md) for the size research:
 ranked smallest-code/smallest-binary approaches per platform, what's already
 applied, and the remaining language/architecture forks.
+
+## Smoke tests
+
+Run functional checks for every shell (not just compile):
+
+```sh
+# Full matrix: backend, macOS, iOS sim, Linux (Orb), Windows (SSH), Android (SSH)
+platform/smoke-test.sh
+
+# Subset
+platform/smoke-test.sh macos windows android
+
+# Android: skip Gradle if APK already built on Windows
+SMOKE_SKIP_BUILD=1 platform/smoke-test.sh android
+
+# Android runtime: needs adb device + WSL pinback-server on Windows host
+SMOKE_ANDROID_RUNTIME=1 platform/smoke-test.sh android
+
+# Deep API smoke after macOS self-host (scripts/qa/pinback-smoke)
+SMOKE_DEEP=1 platform/smoke-test.sh macos
+```
+
+Environment variables: `WINDOWS_HOST` (default `mac@192.168.0.180`),
+`ORB_MACHINE` (default `webkitium-ci`), `MAC_LAN_IP`, `LINUX_STARTUP_TIMEOUT`
+(default 35 — Linux GTK cold start under xvfb can take ~25s).
+
+**Android builds on Windows** (JDK + `ANDROID_HOME` required):
+
+```bat
+cd platform\android
+build.bat debug
+```
+
+**Pitfall:** never run `make clean` inside Orb against the shared `/Users/mac`
+repo mount — it can corrupt Mac object files on the host.

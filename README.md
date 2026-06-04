@@ -1,38 +1,37 @@
 # pinback
 
 ```text
-browser / native webview shell
+browser or native webview shell
         |
         v
-pinback-server
-  |
-  +-- embedded cockpit ui        web/index.html, web/app.js, shiki wasm
-  +-- workspace catalog          ~/.pinback/workspaces.json
-  +-- per-workspace event log    events.log jsonl + bounded replay ring
-  +-- stream fanout              sse/websocket with seq + generation cursors
-  +-- agent supervisor           one ds4-agent child, one active workspace
-  +-- turn snapshots             private snapshot.git, diff, revert hunk api
+build/pinback-server
+  c99 http server, embedded web ui, sse/ws event stream
+        |
+        +--> ~/.pinback
+        |     workspaces.json
+        |     workspaces/<id>/meta.json
+        |     workspaces/<id>/events.log
+        |     workspaces/<id>/snapshot.git
+        |
+        +--> one ds4-agent child
+              stdin: prompts
+              stdout: prose + rendered tool activity
+              stderr: waiting marker as turn boundary
 ```
 
-pinback is a c99 cockpit for `ds4-agent`.
+pinback is a local-first cockpit for `ds4-agent`.
 
-it is not a generic chat ui. it is a process supervisor, event log, and web control surface for a local coding agent. the hard part is not drawing the chat. the hard part is owning the child process, the stream cursor, the replay window, workspace switching, and the difference between "looks connected" and "the agent is actually alive".
+the useful shape is simple: pick a directory, run one agent there, keep the transcript and workspace state, switch to another directory without pretending there are infinite agents or a hosted backend. the server is a single c binary with the web ui embedded into it. tls, auth, and public exposure live in front of it, usually caddy, tailscale, or wireguard.
 
-## interesting parts
+## current shape
 
-`src/agent.c` owns the child process. it forks `ds4-agent`, writes prompts to stdin, classifies stdout into user-visible events, watches stderr for the idle marker, snapshots the workspace at turn start, and emits a diff at turn end.
-
-`src/event_log.c` is the durability and reconnect layer. every workspace has a jsonl log plus an in-memory ring. clients reconnect with `generation` and `seq`; stale cursors get replay, snapshot, or reset instead of silent duplication.
-
-`src/workspace.c` is the catalog. it stores absolute workspace paths, labels, active id, session sha, per-workspace metadata, and hot event-log handles under `~/.pinback`.
-
-`src/handlers.c` is the api surface: workspace create/activate/delete, input, control, revert, runtime, dashboard, health, readiness, metrics, and static ui serving.
-
-`web/` is the shipped cockpit. it is embedded into `src/static_assets.c`, so the normal build has no separate frontend server.
-
-`platform/` is native shell code. desktop shells can self-host `pinback-server`; mobile shells are thin webviews pointed at a remote pinback url.
-
-`tools/ds4_agent_webpty.py` and `tools/ds4-agent-ui/` are the separate runtime cockpit/prototype path for owned ds4 profiles and public demo plumbing.
+- `build/pinback-server` owns the workspace catalog, event logs, active agent process, and local http api.
+- the web ui in `ui/app/` is embedded into `build/generated/static_assets.c`; use `make embed` after changing the ui.
+- the default agent transport is clean `--non-interactive` pipes plus transcript re-prefill on workspace return.
+- `--kv-resume` is the experimental exact resume path: tui-over-pipes for `/save` and `/switch`, with prose/tool data taken from `--trace`.
+- each turn snapshots the workspace through a private shadow git dir and emits a revertable `turn_diff`.
+- desktop shells in `platform/` are thin native webview launchers. mobile shells point at a remote pinback url.
+- `runtime/` holds the separate ds4 runtime cockpit/prototype path (supervisor, web pty, vite ui).
 
 ## build
 
@@ -41,13 +40,13 @@ make
 make test
 ```
 
-dev ui from disk:
+to serve the checked-in ui from disk while editing:
 
 ```sh
-./pinback-server --dev --agent-bin ./tools/fake-ds4-agent --workspace "$(pwd)"
+./build/pinback-server --dev --agent-bin ./build/fake-ds4-agent --workspace "$(pwd)"
 ```
 
-refresh embedded ui:
+to refresh the embedded ui:
 
 ```sh
 make embed
@@ -57,36 +56,67 @@ make
 ## run
 
 ```sh
-./pinback-server \
+./build/pinback-server \
   --bind 127.0.0.1:8088 \
   --agent-bin /path/to/ds4-agent \
   --model /path/to/model.gguf \
   --workspace /absolute/project/path
 ```
 
-open `http://127.0.0.1:8088`.
+then open:
+
+```text
+http://127.0.0.1:8088
+```
+
+for a quick fake-agent smoke:
+
+```sh
+./build/pinback-server --agent-bin ./build/fake-ds4-agent --workspace "$(pwd)"
+make smoke URL=http://127.0.0.1:8088
+```
 
 ## api
 
 ```text
-get     /api/w
-post    /api/w
-post    /api/w/<id>/activate
-get     /api/w/<id>/events
-post    /api/w/<id>/input
-post    /api/w/<id>/control
-post    /api/w/<id>/revert
-delete  /api/w/<id>
+get    /api/w
+post   /api/w                         create workspace
+post   /api/w/<id>/activate           switch active workspace
+get    /api/w/<id>/events             sse stream, replay, snapshot
+post   /api/w/<id>/input              submit prompt
+post   /api/w/<id>/control            abort or reset
+post   /api/w/<id>/revert             apply reverse patch for a turn diff
+delete /api/w/<id>
 
-get     /api/runtime
-get     /api/dashboard
-get     /healthz
-get     /readyz
-get     /metrics
+get    /api/runtime
+get    /api/dashboard
+get    /healthz
+get    /readyz
+get    /metrics
 ```
 
-## transport truth
+## repo map
 
-default mode is clean non-interactive pipes plus transcript re-prefill when returning to a workspace. exact kv resume is behind `--kv-resume`: tui command channel for `/save` and `/switch`, trace tailing for clean prose and raw tool data.
+```text
+src/              c server, supervisor, event log, workspace store
+build/            pinback-server, fake-ds4-agent, generated static_assets.c
+ui/app/           shipped cockpit ui
+ui/shiki-bundle/  shiki/oniguruma rebuild toolchain
+tests/            c unit and integration tests
+scripts/          embed + qa smoke harnesses
+docs/             architecture, operations, postmortems, backlog
+ingress/          caddy, tailscale, and wireguard examples
+platform/         macos, ios, android, linux, and windows webview shells
+runtime/          ds4 runtime supervisor + prototype ui (optional)
+experiments/      transport probes (not shipped)
+```
 
-read `docs/transport-findings.md` before changing transport.
+see [docs/REPO_LAYOUT.md](docs/REPO_LAYOUT.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## the edge that matters
+
+do not call this tiny glue. pinback owns transport, streaming, session continuity, reconnect behavior, event replay, process lifecycle, workspace state, and public ingress boundaries. that is the hard part.
+
+the default path is intentionally boring because it is the one that stays clean: non-interactive ds4 over pipes, with the previous transcript invisibly re-prefilled after a workspace switch. exact kv resume is behind `--kv-resume`; it is more interesting and more fragile, because it has to drive the tui command loop and parse trace output correctly.
+
+read `docs/architecture/transport-findings.md` before changing the agent transport. that file is the current source of truth.

@@ -28,7 +28,7 @@
  * glyph U+1F6E0 U+FE0F (UTF-8: F0 9F 9B A0 EF B8 8F), e.g.
  * "<glyph> write  path=/tmp/x.txt". It does NOT emit raw DSML on stdout
  * in any mode -- verified against the real binary, see
- * docs/transport-findings.md. So the classifier keys tool activity off
+ * docs/architecture/transport-findings.md. So the classifier keys tool activity off
  * this prefix rather than DSML block tags. Turn-end is the stderr
  * "+DWARFSTAR_WAITING" marker, not any stdout sentinel. */
 #define TOOL_GLYPH "\xF0\x9F\x9B\xA0\xEF\xB8\x8F"
@@ -914,7 +914,7 @@ static bool stdin_write_line(pin_agent *a, const char *line) {
  * ====================================================================
  *
  * ds4-agent cannot save/restore a session over the non-interactive pipe
- * (slash commands are TUI-only, verified -- see docs/transport-findings.md),
+ * (slash commands are TUI-only, verified -- see docs/architecture/transport-findings.md),
  * so pinback owns continuity. On switching to a workspace that already
  * has conversation history, we render that history to text and stash it
  * in a->pending_resume; the next submit prepends it (invisibly -- the

@@ -118,15 +118,15 @@ static bool wait_snapshot_contains(pin_event_log *log, const char *needle,
 }
 
 static const char *find_fake_agent(void) {
-    /* tests run from repo root via Makefile so tools/fake-ds4-agent works. */
+    /* tests run from repo root via Makefile so build/fake-ds4-agent works. */
     static char buf[1024];
-    if (access("tools/fake-ds4-agent", X_OK) == 0) {
-        snprintf(buf, sizeof(buf), "%s/tools/fake-ds4-agent",
+    if (access("build/fake-ds4-agent", X_OK) == 0) {
+        snprintf(buf, sizeof(buf), "%s/build/fake-ds4-agent",
                  getcwd(NULL, 0)); /* leak ok in test */
         return buf;
     }
-    if (access("./tools/fake-ds4-agent", X_OK) == 0) return "./tools/fake-ds4-agent";
-    return "tools/fake-ds4-agent";
+    if (access("./build/fake-ds4-agent", X_OK) == 0) return "./build/fake-ds4-agent";
+    return "build/fake-ds4-agent";
 }
 
 static void test_spawn_and_submit(void) {

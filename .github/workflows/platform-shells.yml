@@ -98,7 +98,7 @@ jobs:
           rm -rf dist Pinback-debug.app
           mkdir -p Pinback-debug.app/Contents/MacOS Pinback-debug.app/Contents/Resources dist
           cp .build/debug/PinbackShell Pinback-debug.app/Contents/MacOS/PinbackShell
-          cp ../../pinback-server Pinback-debug.app/Contents/MacOS/pinback-server
+          cp ../../build/pinback-server Pinback-debug.app/Contents/MacOS/pinback-server
           cp Resources/AppIcon.icns Pinback-debug.app/Contents/Resources/AppIcon.icns
           cat > Pinback-debug.app/Contents/Info.plist <<'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>

@@ -18,12 +18,22 @@ CFLAGS  ?= $(OPT_FLAGS) $(DEBUG_FLAGS) $(WARN_FLAGS) $(STD_FLAGS) -Isrc
 ifeq ($(UNAME_S),Darwin)
 CFLAGS  += -D_DARWIN_C_SOURCE
 endif
+ifeq ($(UNAME_S),Linux)
+CFLAGS  += -D_DEFAULT_SOURCE
+endif
 
 LDLIBS ?= -lpthread
 
-SRC_DIR  := src
-TEST_DIR := tests
-TOOLS    := tools
+BUILD_DIR := build
+OBJ_DIR   := $(BUILD_DIR)/obj
+GEN_DIR   := $(BUILD_DIR)/generated
+BINDIR    := $(BUILD_DIR)
+
+SRC_DIR   := src
+TEST_DIR  := tests
+SUPPORT   := tests/support
+UI_DIR    := ui/app
+EMBED_SH  := scripts/embed/gen-static-assets.sh
 
 CORE_SRCS := \
 	$(SRC_DIR)/util.c \
@@ -35,18 +45,20 @@ CORE_SRCS := \
 	$(SRC_DIR)/vterm.c \
 	$(SRC_DIR)/tracestream.c \
 	$(SRC_DIR)/agent.c \
-	$(SRC_DIR)/handlers.c \
-	$(SRC_DIR)/static_assets.c
+	$(SRC_DIR)/handlers.c
 
-CORE_OBJS := $(CORE_SRCS:.c=.o)
+CORE_OBJS := $(patsubst $(SRC_DIR)/%.c,$(OBJ_DIR)/%.o,$(CORE_SRCS))
 
-MAIN_BIN  := pinback-server
+GEN_STATIC    := $(GEN_DIR)/static_assets.c
+GEN_STATIC_OBJ := $(OBJ_DIR)/static_assets.o
+
+MAIN_BIN  := $(BINDIR)/pinback-server
 MAIN_SRC  := $(SRC_DIR)/pinback.c
-MAIN_OBJ  := $(MAIN_SRC:.c=.o)
+MAIN_OBJ  := $(OBJ_DIR)/pinback.o
 
-FAKE_BIN  := $(TOOLS)/fake-ds4-agent
-FAKE_SRC  := $(TOOLS)/fake-ds4-agent.c
-FAKE_OBJ  := $(FAKE_SRC:.c=.o)
+FAKE_BIN  := $(BINDIR)/fake-ds4-agent
+FAKE_SRC  := $(SUPPORT)/fake-ds4-agent.c
+FAKE_OBJ  := $(OBJ_DIR)/fake-ds4-agent.o
 
 TEST_SRCS := \
 	$(TEST_DIR)/test_util.c \
@@ -55,49 +67,76 @@ TEST_SRCS := \
 	$(TEST_DIR)/test_workspace.c \
 	$(TEST_DIR)/test_agent.c \
 	$(TEST_DIR)/test_main.c
-TEST_OBJS := $(TEST_SRCS:.c=.o)
-TEST_BIN  := $(TEST_DIR)/run_tests
+TEST_OBJS := $(patsubst $(TEST_DIR)/test_%.c,$(OBJ_DIR)/test_%.o,$(TEST_SRCS))
+TEST_BIN  := $(BUILD_DIR)/run_tests
 
-.PHONY: all clean test smoke help embed
+.PHONY: all clean test smoke help embed embed-check pinback-server fake-ds4-agent
+
+# Avoid parallel link races on fresh build/ trees (common on CI -j).
+.NOTPARALLEL: all test
 
 all: $(MAIN_BIN) $(FAKE_BIN)
 
-# Regenerate the embedded UI from web/ on demand. The output is checked
-# in (so a fresh `make` works without xxd on PATH); run `make embed` to
-# refresh after editing web/.
+pinback-server: $(MAIN_BIN)
+fake-ds4-agent: $(FAKE_BIN)
+
+# Regenerate embedded UI from ui/app/. Output lives under build/generated/.
 embed:
-	bash $(TOOLS)/gen-static-assets.sh > $(SRC_DIR)/static_assets.c
+	@mkdir -p $(GEN_DIR)
+	bash $(EMBED_SH) > $(GEN_STATIC)
+
+embed-check: embed
+	@test -s $(GEN_STATIC)
+
+$(GEN_STATIC): $(EMBED_SH) $(shell find $(UI_DIR) -type f 2>/dev/null)
+	@mkdir -p $(GEN_DIR)
+	bash $(EMBED_SH) > $(GEN_STATIC)
 
 help:
 	@echo "pinback build targets:"
-	@echo "  make              Build ./pinback-server and tools/fake-ds4-agent"
+	@echo "  make              Build build/pinback-server and build/fake-ds4-agent"
 	@echo "  make test         Build and run unit + integration tests"
 	@echo "  make smoke URL=…  Run live smoke against URL"
-	@echo "  make embed        Regenerate src/static_assets.c from web/"
-	@echo "  make clean        Remove build outputs"
+	@echo "  make embed        Regenerate build/generated/static_assets.c from ui/app/"
+	@echo "  make clean        Remove build/ outputs"
 
-$(MAIN_BIN): $(CORE_OBJS) $(MAIN_OBJ)
+$(MAIN_BIN): $(CORE_OBJS) $(GEN_STATIC_OBJ) $(MAIN_OBJ) | $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
-$(FAKE_BIN): $(FAKE_OBJ) $(SRC_DIR)/util.o
+$(FAKE_BIN): $(FAKE_OBJ) $(OBJ_DIR)/util.o | $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
-%.o: %.c
+$(TEST_BIN): $(TEST_OBJS) $(CORE_OBJS) $(GEN_STATIC_OBJ) | $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $(TEST_OBJS) $(CORE_OBJS) $(GEN_STATIC_OBJ) $(LDLIBS)
+
+$(BINDIR):
+	@mkdir -p $(BINDIR)
+
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-$(TEST_BIN): $(TEST_OBJS) $(CORE_OBJS)
-	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+$(OBJ_DIR)/test_%.o: $(TEST_DIR)/test_%.c | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(OBJ_DIR)/fake-ds4-agent.o: $(FAKE_SRC) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+$(GEN_STATIC_OBJ): $(GEN_STATIC) src/static_assets.h | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c -o $@ $(GEN_STATIC)
+
+$(OBJ_DIR):
+	@mkdir -p $(OBJ_DIR)
 
 test: $(TEST_BIN) $(FAKE_BIN)
 	$(TEST_BIN)
 
 smoke:
 	@if [ -z "$(URL)" ]; then echo "usage: make smoke URL=http://127.0.0.1:8088"; exit 2; fi
-	$(TOOLS)/pinback-smoke "$(URL)"
+	scripts/qa/pinback-smoke "$(URL)"
 
 clean:
-	rm -f $(MAIN_BIN) $(FAKE_BIN) $(CORE_OBJS) $(MAIN_OBJ) $(FAKE_OBJ) \
-	      $(TEST_OBJS) $(TEST_BIN)
+	rm -rf $(BUILD_DIR)
+	rm -f $(SRC_DIR)/*.o $(TEST_DIR)/*.o $(SUPPORT)/*.o
 
 # Rebuild on header change.
 $(CORE_OBJS) $(MAIN_OBJ) $(TEST_OBJS) $(FAKE_OBJ): $(wildcard $(SRC_DIR)/*.h)

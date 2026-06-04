@@ -6,7 +6,7 @@
  * tool lines through linenoise's cursor/redraw choreography; this models
  * the screen so the clean content (everything above the editor widget)
  * can be recovered. The algorithm is the validated reference in
- * tools/transport-probe/vterm_ref.py (cross-checked against pyte).
+ * experiments/transport-probe/vterm_ref.py (cross-checked against pyte).
  *
  * Escape subset handled: CR LF BS TAB, CSI A/B/C/D (cursor), G (column),
  * H/f (position), K/J (erase), m (SGR, ignored), ? private modes

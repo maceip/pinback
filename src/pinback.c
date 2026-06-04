@@ -17,7 +17,7 @@
  *   --root DIR         persistent state root (default ~/.pinback)
  *   --ring-cap N       per-workspace ring size (default 4096)
  *   --web-dir DIR      serve UI from DIR
- *   --dev              read UI from web/ on every request
+ *   --dev              read UI from ui/app/ on every request
  *   --quiet            warnings + errors only
  *   --help, -h
  */
@@ -64,7 +64,7 @@ static void usage(FILE *fp) {
         "  --root DIR         state root (default ~/.pinback)\n"
         "  --ring-cap N       per-workspace ring size (default 4096)\n"
         "  --web-dir DIR      serve UI from disk\n"
-        "  --dev              dev mode: read web/ from disk\n"
+        "  --dev              dev mode: read ui/app/ from disk\n"
         "  --quiet            only warnings and errors\n"
         "  --kv-resume        EXPERIMENTAL: drive ds4-agent's TUI for exact\n"
         "                     /save+/switch KV resume. The KV mechanism works\n"
@@ -72,7 +72,7 @@ static void usage(FILE *fp) {
         "                     extraction from the TUI redraw stream is still\n"
         "                     rough. Default off: clean transport + transcript\n"
         "                     re-prefill, which preserves session state\n"
-        "                     robustly. See docs/transport-findings.md.\n"
+        "                     robustly. See docs/architecture/transport-findings.md.\n"
         "  --help, -h         show this message\n",
         fp);
 }
@@ -191,7 +191,7 @@ int main(int argc, char **argv) {
         }
     }
     if (!root_dir) root_dir = default_root();
-    if (dev_mode && !web_dir) web_dir = "web";
+    if (dev_mode && !web_dir) web_dir = "ui/app";
 
     pin_log_init("pinback-server", quiet ? PIN_LOG_WARN : PIN_LOG_INFO);
 
@@ -224,7 +224,7 @@ int main(int argc, char **argv) {
          * hooks for session resume (workspaces.json.session_sha,
          * /switch on respawn) remain in place and re-enable cleanly
          * once the future pty/interactive supervisor lands -- see
-         * docs/todo-paint.md. Tests against fake-ds4-agent override
+         * docs/backlog/todo-paint.md. Tests against fake-ds4-agent override
          * this with a non-zero timeout because the fake honors the
          * dance directly on stdin. */
         .save_timeout_ms = kv_resume ? 8000 : 0,

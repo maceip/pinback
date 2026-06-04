@@ -18,7 +18,7 @@ APP="Pinback.app"
 REPO_ROOT="$(cd ../.. && pwd)"          # platform/macos -> project root
 SERVER=""
 if make -C "$REPO_ROOT" pinback-server >/dev/null 2>&1; then
-    SERVER="$REPO_ROOT/pinback-server"
+    SERVER="$REPO_ROOT/build/pinback-server"
 fi
 
 rm -rf "$APP"

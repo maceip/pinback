@@ -1,24 +1,26 @@
 // swift-tools-version: 6.1
-// Pinback macOS shell — a native window wrapping WKWebView via the new
-// SwiftUI `WebView` API (macOS 26 "Tahoe").
+// Pinback macOS shell — pure Objective-C (AppKit + WebKit) for the smallest
+// binary. Builds with `swift build`; no Swift sources, so it compiles on any
+// recent Xcode (unlike the iOS SwiftUI WebView, which needs the iOS 26 SDK).
 import PackageDescription
 
 let package = Package(
     name: "PinbackShell",
     platforms: [
-        // The declarative SwiftUI WebView / WebPage API ships in macOS 26.
-        .macOS("26.0")
+        // ObjC + WKWebView runs far back; v13 keeps the binary buildable on stock
+        // CI runners while still running on the latest macOS.
+        .macOS(.v13)
     ],
     targets: [
         .executableTarget(
             name: "PinbackShell",
             path: "Sources/PinbackShell",
-            // Optimize the release binary for size and strip dead code. The
-            // WKWebView engine + Swift runtime are OS dylibs, never in the binary.
-            swiftSettings: [
-                .unsafeFlags(["-Osize"], .when(configuration: .release))
+            cSettings: [
+                .unsafeFlags(["-fobjc-arc", "-Os"])
             ],
             linkerSettings: [
+                .linkedFramework("Cocoa"),
+                .linkedFramework("WebKit"),
                 .unsafeFlags(["-Wl,-dead_strip"])
             ]
         )

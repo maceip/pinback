@@ -1,10 +1,10 @@
 name: platform shells
 
 # Compiles the platform/ webview shells on native runners so the shells get real
-# build coverage. Linux, Windows, and Android build on stock GitHub runners today.
-# macOS and iOS are intentionally NOT built here: they require the new SwiftUI
-# WebView/WebPage API, which needs the macOS 26 / iOS 26 SDK (Xcode 26 beta) that
-# hosted macOS runners do not yet ship — build those locally with Xcode 26.
+# build coverage. Linux, Windows, Android, and macOS build on stock GitHub runners.
+# iOS is NOT built here: it uses the new SwiftUI WebView/WebPage API, which needs
+# the iOS 26 SDK (Xcode 26 beta) that hosted runners don't ship yet — build it
+# locally with Xcode 26.
 
 on:
   push:
@@ -47,6 +47,18 @@ jobs:
         working-directory: platform/windows
         shell: pwsh
         run: Test-Path build/Release/pinback-shell.exe
+
+  macos:
+    name: macos (AppKit + WKWebView, ObjC)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        working-directory: platform/macos
+        run: swift build -c release
+      - name: Verify artifact
+        working-directory: platform/macos
+        run: test -x .build/release/PinbackShell
 
   android:
     name: android (WebView)

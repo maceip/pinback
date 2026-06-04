@@ -1,50 +1,49 @@
-# macOS shell — SwiftUI `WebView` (WKWebView)
+# macOS shell — AppKit + WKWebView (Objective-C)
 
-A native macOS window hosting `WKWebView` through the **new declarative SwiftUI
-`WebView` + `WebPage` API** (WebKit-for-SwiftUI, macOS 26 "Tahoe", currently beta
-as of Xcode 26). This replaces the old `NSViewRepresentable` boilerplate — the
-whole shell is ~25 lines.
+A native macOS window hosting `WKWebView`, written in **pure Objective-C** for the
+smallest binary. The window chrome and the WKWebView engine are the OS's, so this
+paints identically to a SwiftUI shell — it just drops the Swift/SwiftUI codegen.
+The whole shell is ~35 lines (`main.m`).
+
+> Size-optimized variant. The new SwiftUI `WebView`/`WebPage` API (macOS 26) is
+> the *newest* way to write this, but it produces a larger binary and requires the
+> macOS 26 SDK. We chose minimum binary here; iOS keeps the SwiftUI variant.
 
 ## Layout
 
 ```
 macos/
-├── Package.swift                         # SwiftPM executable, macOS 26 platform
-├── Scripts/bundle.sh                     # wrap the binary into a Pinback.app
-└── Sources/PinbackShell/PinbackShellApp.swift   # the entire app
+├── Package.swift                       # SwiftPM executable, ObjC target, macOS 13+
+├── Scripts/bundle.sh                   # wrap the binary into Pinback.app (+ icon)
+├── Resources/AppIcon.icns              # brand icon
+└── Sources/PinbackShell/main.m         # the entire app
 ```
-
-Scaffolded per the brief with `swift package init --type executable` and then
-trimmed to the SwiftUI App entry point.
 
 ## Requirements
 
-- macOS 26 SDK + Xcode 26 (the `WebView`/`WebPage` symbols live in `import WebKit`).
-- Swift 6.1 toolchain.
+- Any recent Xcode / Swift 6.1 toolchain (no Xcode 26 needed — there's no Swift code).
+- Builds and runs on macOS 13+.
 
-## Run
+## Build & run
 
 ```sh
 cd platform/macos
-swift run                                  # builds and launches the window
+swift run                                   # builds and launches the window
 PINBACK_URL=http://127.0.0.1:18192 swift run
 ```
 
-`swift run` produces a runnable AppKit/SwiftUI app and is fine for quick
-iteration. But a bare binary has no `Info.plist`, so App Transport Security will
-block the plain-http dev server. To get a proper bundle (with ATS allowing local
-networking):
+`swift run` produces a runnable AppKit app and is fine for quick iteration. But a
+bare binary has no `Info.plist`, so App Transport Security blocks the plain-http
+dev server. For a proper bundle (ATS allowing local networking, Dock icon):
 
 ```sh
-./Scripts/bundle.sh        # builds release + assembles Pinback.app
+./Scripts/bundle.sh        # builds release + assembles Pinback.app with AppIcon.icns
 open Pinback.app
 ```
-
-For an icon/entitlements/signing, open `Package.swift` in Xcode 26 and archive.
 
 ## Notes
 
 - No engine is bundled: `WKWebView` is the system WebKit.
-- `WebPage` is an `@Observable` model — bind `page.url`, `page.title`,
-  `page.estimatedProgress`, etc. for navigation chrome if you ever want more than
-  a bare shell.
+- Size flags: `-Os` + `-Wl,-dead_strip` (in `Package.swift`) and `strip -x`
+  (in `bundle.sh`).
+- Built in CI on `macos-latest` (a pure-ObjC target needs no beta SDK).

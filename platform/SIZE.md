@@ -126,6 +126,25 @@ back) that are tied to AndroidX.
   older-OS support: paint stays identical, you gain broad support + a smaller binary,
   you lose the newest SwiftUI API. Not a paint decision — an OS-floor decision.
 
-Net: the only size cut that's purely free (no paint, no UX loss) is **Windows →
-built-in loader**. The rest trade modern API/UX for bytes that are already tiny, so
-"keep native/modern paint" argues for keeping the current variants everywhere else.
+## Decisions & results (implemented)
+
+Direction chosen: **prefer small binary over small code; optimize size on macOS +
+Windows; keep the OS frameworks on Android + iOS** (the framework-only features
+like predictive back aren't worth hand-rolling); target latest OS only, so the
+"backport to old OS" benefit of the frameworks is moot.
+
+| Platform | Decision | Result |
+|---|---|---|
+| **Windows** | **built-in loader** (no `WebView2Loader.dll`), WRL kept, size flags | ✅ built + run-verified on this box: **single self-contained exe**, no DLL; **~151 KB** (only ~23 KB code; ~128 KB is the embedded brand icon). Footprint ~310 KB→151 KB and 2 files→1. |
+| **macOS** | **pure Objective-C** (AppKit + WKWebView), drop SwiftUI | ✅ rewritten; builds via `swift build` on `macos-latest` in CI (no beta SDK needed). Paint-identical to SwiftUI. |
+| **Android** | **keep** Kotlin + AndroidX (edge-to-edge + predictive back come free) | ✅ unchanged; **80 KB** R8 release APK, render-verified on emulator. |
+| **iOS** | **keep** SwiftUI `WebView` (newest API, OS-provided runtime) | unchanged; builds with Xcode 26 (not in CI). |
+| **Linux** | get it working first (size already minimal) | needs a Linux build to verify — covered by the CI `linux` job; not buildable on the Windows host. |
+
+CI now builds **Linux, Windows, Android, and macOS** on stock runners; only iOS is
+excluded (needs the Xcode 26 SDK for the SwiftUI `WebView`).
+
+Net: the one purely-free size cut (no paint/UX loss) was **Windows → built-in
+loader**, now shipped and verified. macOS went ObjC for a smaller binary with
+identical paint. Android + iOS keep their frameworks because the modern paint/UX
+there *is* the framework, and their footprints are already tiny.

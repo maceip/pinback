@@ -87,6 +87,108 @@ function escHtml(s) {
   return d.innerHTML;
 }
 
+/* ---- long-run turn timeline (left rail, virtualized) ---- */
+const timelineEl = document.getElementById('timeline');
+const timelineScroll = document.getElementById('timeline-scroll');
+const timelineSpacer = document.getElementById('timeline-spacer');
+let timelineTurns = [];
+const TL_ITEM_H = 46;
+
+function resetTimeline() {
+  timelineTurns = [];
+  if (timelineSpacer) timelineSpacer.innerHTML = '';
+  document.body.classList.remove('rail-open');
+  if (timelineEl) timelineEl.hidden = true;
+}
+function renderTimeline() {
+  if (!timelineSpacer || !timelineEl || timelineEl.hidden) return;
+  timelineSpacer.style.height = (timelineTurns.length * TL_ITEM_H) + 'px';
+  const top = timelineScroll.scrollTop;
+  const h = timelineScroll.clientHeight || 600;
+  const start = Math.max(0, Math.floor(top / TL_ITEM_H) - 3);
+  const end = Math.min(timelineTurns.length, Math.ceil((top + h) / TL_ITEM_H) + 3);
+  timelineSpacer.querySelectorAll('.tl-item').forEach((n) => n.remove());
+  for (let i = start; i < end; i++) {
+    const t = timelineTurns[i];
+    const d = document.createElement('div');
+    d.className = 'tl-item';
+    d.style.top = (i * TL_ITEM_H) + 'px';
+    const num = document.createElement('span');
+    num.className = 'tl-num';
+    num.textContent = 'turn ' + (i + 1);
+    const tx = document.createElement('span');
+    tx.className = 'tl-text';
+    tx.textContent = t.text;
+    d.append(num, tx);
+    d.addEventListener('click', () => t.el &&
+      t.el.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    timelineSpacer.appendChild(d);
+  }
+}
+function addTimelineTurn(bubbleEl, text) {
+  timelineTurns.push({ el: bubbleEl, text: text || '' });
+  if (timelineTurns.length >= 8 && timelineEl && timelineEl.hidden) {
+    timelineEl.hidden = false;
+    document.body.classList.add('rail-open');
+  }
+  renderTimeline();
+}
+if (timelineScroll) timelineScroll.addEventListener('scroll', renderTimeline);
+{
+  const turnsBtn = document.getElementById('turns-btn');
+  if (turnsBtn) turnsBtn.addEventListener('click', () => {
+    timelineEl.hidden = !timelineEl.hidden;
+    document.body.classList.toggle('rail-open', !timelineEl.hidden);
+    renderTimeline();
+  });
+}
+
+/* ---- export the current conversation to a self-contained HTML file ---- */
+function exportConversation() {
+  const css = [...document.querySelectorAll('style')].map((s) => s.textContent).join('\n');
+  const label = (activeWorkspaceMeta && activeWorkspaceMeta.label) || 'conversation';
+  const title = 'pinback — ' + label;
+  const doc =
+    '<!doctype html><html><head><meta charset="utf-8"><title>' + escHtml(title) +
+    '</title><style>' + css +
+    '\nbody{padding:24px}header,#composer,#timeline,#dash-overlay,#empty,.empty{display:none!important}' +
+    '#chat{padding:0!important;max-width:860px;margin:0 auto;position:static}' +
+    '.msg{max-width:none}</style></head><body>' +
+    '<h2 style="font-family:system-ui">' + escHtml(title) + '</h2>' +
+    '<div id="chat">' + chat.innerHTML + '</div></body></html>';
+  const blob = new Blob([doc], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = label.replace(/[^\w.-]+/g, '_') + '-' +
+    new Date().toISOString().slice(0, 10) + '.html';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+{
+  const exportBtn = document.getElementById('export-btn');
+  if (exportBtn) exportBtn.addEventListener('click', exportConversation);
+}
+
+/* ---- desktop notifications when a turn finishes and the tab is hidden ---- */
+function requestNotifyPermission() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    try { Notification.requestPermission().catch(() => {}); } catch (_) {}
+  }
+}
+function notifyTurnDone(text) {
+  if ('Notification' in window && Notification.permission === 'granted' && document.hidden) {
+    try {
+      new Notification('ds4-agent finished', {
+        body: (text || '').replace(/\s+/g, ' ').trim().slice(0, 140) || 'Turn complete.',
+        tag: 'pinback-turn',
+      });
+    } catch (_) {}
+  }
+}
+
 /* ---- #3 tool-call cards ---- */
 function renderToolCard(raw) {
   const det = document.createElement('details');
@@ -501,6 +603,7 @@ function setRuntimeBanner(text, level) {
 
 function showEmptyState() {
   chat.innerHTML = '';
+  resetTimeline();
   const e = document.createElement('div');
   e.className = 'empty';
   e.id = 'empty';
@@ -540,7 +643,8 @@ function applyEvent(env) {
     case 'cursor_reset':
       return;
     case 'user': {
-      el('user', env.payload && env.payload.text || '');
+      const utext = env.payload && env.payload.text || '';
+      addTimelineTurn(el('user', utext), utext);
       activeAssistant = null;
       activeAssistantText = '';
       busy = true;
@@ -657,6 +761,7 @@ function applyEvent(env) {
           finished.appendChild(meta);
         }
       }
+      if (!wasAborted) notifyTurnDone(finishedText);
       promptEl.focus();
       return;
     }
@@ -932,6 +1037,7 @@ async function send() {
   promptEl.style.height = 'auto';
   busy = true;
   sendBtn.disabled = true;
+  requestNotifyPermission();   // user gesture: ask once so we can notify on completion
   try {
     const r = await fetch('/api/w/' + activeWorkspaceId + '/input', {
       method: 'POST',

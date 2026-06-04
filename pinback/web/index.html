@@ -363,6 +363,24 @@ table.tc-diff td.add{background:rgba(60,170,90,.16)}
 .dash-state.ready,.dash-state.busy{color:var(--warn); border-color:var(--warn)}
 .dash-prev{color:var(--fg-mute); max-width:340px; overflow:hidden;
   text-overflow:ellipsis; white-space:nowrap}
+
+/* Long-run timeline rail (left), virtualized */
+#export-btn,#turns-btn{cursor:pointer}
+#timeline{position:fixed; left:0; top:49px; bottom:0; width:236px; z-index:20;
+  border-right:1px solid var(--border); background:var(--bg,#0d1017); overflow:hidden}
+#timeline[hidden]{display:none}
+#timeline h4{margin:0; padding:10px 12px; font-size:11px; color:var(--fg-mute);
+  text-transform:uppercase; letter-spacing:.06em; border-bottom:1px solid var(--border)}
+#timeline-scroll{position:absolute; left:0; right:0; top:34px; bottom:0; overflow-y:auto}
+#timeline-spacer{position:relative}
+.tl-item{position:absolute; left:0; right:0; height:46px; padding:6px 12px;
+  box-sizing:border-box; cursor:pointer; border-bottom:1px solid var(--border);
+  overflow:hidden}
+.tl-item:hover{background:var(--asst)}
+.tl-num{color:var(--fg-mute); font-size:10px; display:block}
+.tl-text{font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  display:block}
+body.rail-open #chat, body.rail-open #composer{padding-left:252px}
 </style>
 </head>
 <body>
@@ -378,6 +396,8 @@ table.tc-diff td.add{background:rgba(60,170,90,.16)}
   <span class="runtime" id="runtime">
     <span><span class="dot" id="up-dot"></span><span id="up-state">connecting&#8230;</span></span>
   </span>
+  <button id="turns-btn" title="Toggle the turn timeline">Turns</button>
+  <button id="export-btn" title="Export this conversation to a self-contained HTML file">Export</button>
   <button id="dash-btn" title="Cross-workspace dashboard">Dashboard</button>
   <button id="reset-btn" title="Reset this workspace's conversation">Reset</button>
   <div id="ws-tray">
@@ -389,6 +409,11 @@ table.tc-diff td.add{background:rgba(60,170,90,.16)}
     </div>
   </div>
 </header>
+
+<nav id="timeline" hidden>
+  <h4>Turns</h4>
+  <div id="timeline-scroll"><div id="timeline-spacer"></div></div>
+</nav>
 
 <div id="chat">
   <div class="empty" id="empty">

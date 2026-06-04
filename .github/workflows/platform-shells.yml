@@ -179,10 +179,15 @@ jobs:
       - name: build debug apk
         working-directory: platform/android
         run: ./gradlew assembleDebug --no-daemon
+      - name: package apk
+        working-directory: platform/android
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk dist/pinback-android-debug.apk
       - uses: actions/upload-artifact@v4
         with:
           name: pinback-android-debug
-          path: platform/android/app/build/outputs/apk/debug/app-debug.apk
+          path: platform/android/dist/pinback-android-debug.apk
           if-no-files-found: error
 
   publish-release:
@@ -198,7 +203,7 @@ jobs:
       - name: flatten assets
         run: |
           mkdir -p release-assets
-          find dist -type f \( -name '*.zip' -o -name '*.apk' -o -name '*.tar.gz' -o -name '*.txt' \) -print -exec cp {} release-assets/ \;
+          find dist -type f \( -name '*.zip' -o -name '*.apk' -o -name '*.tar.gz' \) -print -exec cp {} release-assets/ \;
           ls -lh release-assets
       - name: publish release
         env:

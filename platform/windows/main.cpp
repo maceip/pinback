@@ -11,9 +11,9 @@
 //   - Otherwise the shell IS the launcher: it spawns the bundled
 //     `pinback-server.exe` child on 127.0.0.1:8088, waits for /healthz, then
 //     loads it, and terminates the child on window close.
-#include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>
 #include <wrl.h>
 #include <string>
 #include "WebView2.h"

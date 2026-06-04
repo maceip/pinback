@@ -43,11 +43,14 @@ cd platform/android
 ./gradlew installDebug                  # install to a running emulator/device
 ```
 
-On the emulator the default URL is `http://10.0.2.2:18192` — `10.0.2.2` is the
-emulator's alias for the host loopback, so it reaches the cockpit dev server on
-your machine. `res/xml/network_security_config.xml` permits plain http only to
-the loopback hosts (everything else stays https-only). Override the URL at build
-time by editing the `PINBACK_URL` `buildConfigField`.
+Android can't host `pinback-server` (no `ds4-agent` / 87 GB model on the phone),
+so the app is a thin client onto a remote pinback. On the emulator the default
+URL is `http://10.0.2.2:8088` — `10.0.2.2` is the emulator's alias for the host
+loopback, so it reaches a `pinback-server` running on your machine.
+`res/xml/network_security_config.xml` permits plain http only to the loopback
+hosts (everything else stays https-only). For a physical device, override
+`PINBACK_URL` (the `buildConfigField`, or set the env var) with your machine's
+LAN / Tailscale address.
 
 ## Notes
 

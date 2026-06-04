@@ -40,10 +40,12 @@ cd platform/ios
 xcodebuild -scheme Pinback -destination 'platform=iOS Simulator,name=iPhone 16' build
 ```
 
-The iOS Simulator shares the Mac's network stack, so the default
-`http://127.0.0.1:18192` reaches the cockpit dev server running on your Mac. On a
-physical device, set `PINBACK_URL` in the scheme's Run → Arguments → Environment
-to your Mac's LAN address (and that host's ATS rules apply).
+iOS can't host `pinback-server` (no `ds4-agent` / 87 GB model on-device), so the
+app is a thin client onto a remote pinback. The iOS Simulator shares the Mac's
+network stack, so the default `http://127.0.0.1:8088` reaches a `pinback-server`
+running on your Mac (`make pinback-server && ./pinback-server`). On a physical
+device, set `PINBACK_URL` in the scheme's Run → Arguments → Environment to your
+Mac's LAN / Tailscale address (and that host's ATS rules apply).
 
 ## Notes
 

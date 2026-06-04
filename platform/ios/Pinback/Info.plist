@@ -32,9 +32,9 @@
         <string>UIInterfaceOrientationLandscapeLeft</string>
         <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
-    <!-- Allow the shell to reach a plain-http dev server on the loopback host
-         (the iOS Simulator shares the Mac's network stack, so 127.0.0.1 hits
-         the cockpit dev server running on your Mac). -->
+    <!-- Allow the shell to reach a plain-http pinback-server on the loopback
+         host (the iOS Simulator shares the Mac's network stack, so 127.0.0.1
+         hits a pinback-server running on your Mac). -->
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsLocalNetworking</key>

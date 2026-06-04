@@ -36,13 +36,23 @@ linux/
 > (`pkg-config --exists webkitgtk-6.0` → no), so the project is scaffolded but
 > not compiled here.
 
+## How it loads pinback
+
+The shell self-hosts the cockpit: unless `PINBACK_URL` is set, it `fork`+`exec`s
+`pinback-server` on `127.0.0.1:8088`, polls `GET /healthz` until `200`, loads it,
+and `SIGTERM`s the server when the window closes. Build `pinback-server` from the
+repo root (`make pinback-server`) and put it on `PATH` (or set
+`PINBACK_SERVER_BIN` to its path). Set `PINBACK_URL` to skip spawning and load a
+remote/dev server instead.
+
 ## Build & run
 
 ```sh
 cd platform/linux
 meson setup build
 meson compile -C build
-PINBACK_URL=http://127.0.0.1:18192 ./build/pinback-shell
+./build/pinback-shell                              # self-hosts pinback-server
+PINBACK_URL=http://127.0.0.1:8088 ./build/pinback-shell   # or load your own
 ```
 
 No Meson? A single command works too:

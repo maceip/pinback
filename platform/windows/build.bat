@@ -10,5 +10,6 @@ cmake --build "%~dp0build" --config %CONFIG% || exit /b 1
 
 echo.
 echo Built: %~dp0build\%CONFIG%\pinback-shell.exe
-echo Run:   set PINBACK_URL=http://127.0.0.1:18192 ^&^& %~dp0build\%CONFIG%\pinback-shell.exe
+echo Run:   %~dp0build\%CONFIG%\pinback-shell.exe   ^(self-hosts pinback-server.exe if present^)
+echo Or:    set PINBACK_URL=http://127.0.0.1:8088 ^&^& %~dp0build\%CONFIG%\pinback-shell.exe
 endlocal

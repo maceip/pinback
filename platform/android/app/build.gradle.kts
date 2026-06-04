@@ -16,8 +16,11 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
-        // Android emulator reaches the host machine's loopback via 10.0.2.2.
-        buildConfigField("String", "PINBACK_URL", "\"http://10.0.2.2:18192\"")
+        // Android cannot host pinback-server (no ds4-agent / 87GB model on the
+        // phone): the app is a thin client onto a REMOTE pinback. The emulator
+        // reaches a pinback-server on the host machine's loopback via 10.0.2.2;
+        // for a physical device override PINBACK_URL with your LAN/Tailscale host.
+        buildConfigField("String", "PINBACK_URL", "\"http://10.0.2.2:8088\"")
     }
 
     buildFeatures {

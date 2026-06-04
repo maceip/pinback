@@ -1,0 +1,33 @@
+# /etc/wireguard/pinback.conf — example WireGuard server config for the
+# private path described in docs/ARCHITECTURE_REDO.md. Run on a small VM
+# (DigitalOcean / Hetzner / Fly.io / ...). Clients dial in over UDP and
+# pinback-server is reachable at 10.13.13.1:8088 on the private subnet.
+#
+# After installing wireguard-tools:
+#   1. Generate keys:    wg genkey | tee server.key | wg pubkey > server.pub
+#   2. Copy this file to /etc/wireguard/pinback.conf, fill in the
+#      PrivateKey, peer pubkeys, and any other adjustments
+#   3. systemctl enable --now wg-quick@pinback
+#   4. ufw allow 51820/udp
+#
+# IPv4 forwarding must be enabled (sysctl net.ipv4.ip_forward=1).
+
+[Interface]
+Address    = 10.13.13.1/24
+ListenPort = 51820
+PrivateKey = <REPLACE_WITH_SERVER_PRIVATE_KEY>
+
+# When clients connect, route their /api/events traffic to localhost. The
+# Caddy or systemd-running pinback-server listens on 127.0.0.1:8088, and
+# we expose it inside the WG mesh by listening on 10.13.13.1 too:
+#   pinback-server --bind 10.13.13.1:8088 --supervise
+
+# A laptop client.
+[Peer]
+PublicKey  = <CLIENT_PUBKEY>
+AllowedIPs = 10.13.13.2/32
+
+# A phone client.
+[Peer]
+PublicKey  = <PHONE_PUBKEY>
+AllowedIPs = 10.13.13.3/32

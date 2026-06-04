@@ -1,0 +1,58 @@
+# pinback-server behind Caddy v2.
+#
+# Drop this in /etc/caddy/Caddyfile (or include) and `caddy reload`.
+# Caddy handles ACME, HSTS, and HTTP/2; pinback only ever speaks
+# plain HTTP/1.1 on loopback. SSE works out of the box; WebSocket
+# upgrade is forwarded transparently.
+#
+# Two patterns:
+#   1. Public hostname with auto-HTTPS
+#   2. Tailscale-magic-DNS hostname behind tailscale_auth
+#
+# Pick one and adapt the host names to yours.
+
+# ---- 1) Public ---------------------------------------------------------------
+
+pinback.example.com {
+    encode zstd gzip
+
+    # SSE keep-alives on /api/events. Disable buffering and lengthen
+    # idle timeouts so streams aren't cut after the default 30s.
+    reverse_proxy 127.0.0.1:8088 {
+        flush_interval -1
+        transport http {
+            keepalive               60s
+            keepalive_idle_conns    32
+            response_header_timeout 0
+            read_timeout            0
+            write_timeout           0
+        }
+        header_up X-Forwarded-Proto {scheme}
+        header_up X-Forwarded-For   {remote}
+    }
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains"
+        X-Frame-Options            "DENY"
+    }
+
+    @auth not path /healthz /readyz
+    basicauth @auth {
+        # Replace with `caddy hash-password` output for your password:
+        # admin   JDJhJDE0JC...
+    }
+
+    log {
+        output file /var/log/caddy/pinback.log
+        format json
+    }
+}
+
+# ---- 2) Tailscale -----------------------------------------------------------
+#
+# `caddy reverse-proxy` works equally well over a Tailscale-only host. If
+# you'd rather use Tailscale Funnel, see ingress/tailscale-funnel.sh.
+#
+# On the device with Tailscale serve enabled:
+#   tailscale serve --bg --https=443 http://127.0.0.1:8088
+# Then point your browser at https://your-machine.tailnet-name.ts.net.

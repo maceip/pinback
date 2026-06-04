@@ -1,0 +1,33 @@
+# Build artifacts for every platform shell — never commit these.
+
+# Swift / SwiftPM (macos, ios)
+.build/
+.swiftpm/
+*.xcuserstate
+xcuserdata/
+DerivedData/
+
+# Android (gradle)
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.idea/
+*.apk
+*.aab
+
+# Linux (meson / cmake)
+linux/build/
+linux/builddir/
+
+# Windows (cmake / msbuild)
+windows/build/
+windows/out/
+windows/packages/
+*.obj
+*.exe
+*.pdb
+*.dll
+
+# Misc
+.DS_Store

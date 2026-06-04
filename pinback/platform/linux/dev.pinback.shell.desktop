@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Pinback
+Comment=Native shell hosting the Pinback cockpit
+Exec=pinback-shell
+Icon=dev.pinback.shell
+Terminal=false
+Categories=Network;Utility;
+StartupWMClass=pinback-shell

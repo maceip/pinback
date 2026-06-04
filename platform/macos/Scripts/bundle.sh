@@ -11,8 +11,9 @@ BIN=".build/release/PinbackShell"
 APP="Pinback.app"
 
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/PinbackShell"
+cp "Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 strip -x "$APP/Contents/MacOS/PinbackShell"   # drop local symbols
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
@@ -23,6 +24,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleExecutable</key><string>PinbackShell</string>
     <key>CFBundleIdentifier</key><string>dev.pinback.shell</string>
     <key>CFBundleName</key><string>Pinback</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleVersion</key><string>1</string>

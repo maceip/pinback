@@ -33,7 +33,7 @@ else()
     set(WV2_ARCH "x64")
 endif()
 
-add_executable(pinback-shell WIN32 main.cpp app.manifest)
+add_executable(pinback-shell WIN32 main.cpp app.manifest app.rc)
 target_include_directories(pinback-shell PRIVATE "${WV2_NATIVE}/include")
 # This is a Unicode app — all Win32 calls are the ...W variants.
 target_compile_definitions(pinback-shell PRIVATE UNICODE _UNICODE)

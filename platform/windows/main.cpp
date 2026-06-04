@@ -40,6 +40,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     wc.hInstance = hInstance;
     wc.lpszClassName = kClass;
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(1)); // app.rc icon
     RegisterClassW(&wc);
 
     HWND hWnd = CreateWindowExW(

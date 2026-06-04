@@ -19,3 +19,12 @@ executable('pinback-shell', 'main.c',
   link_args : ['-Wl,--gc-sections', '-Wl,--as-needed', '-s'],
   install : true)
 
+# Brand icon + desktop entry, installed into the system theme so the window
+# manager / launcher can show it (matched to the app id dev.pinback.shell).
+install_data('dev.pinback.shell.desktop',
+  install_dir : get_option('datadir') / 'applications')
+foreach sz : ['16', '32', '48', '64', '128', '256', '512']
+  install_data('icons' / 'hicolor' / (sz + 'x' + sz) / 'apps' / 'dev.pinback.shell.png',
+    install_dir : get_option('datadir') / 'icons' / 'hicolor' / (sz + 'x' + sz) / 'apps')
+endforeach
+

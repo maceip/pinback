@@ -9,6 +9,7 @@
 #include "workspace.h"
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -17,8 +18,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 /* ds4-agent renders a tool action as a line beginning with the wrench
@@ -63,6 +66,7 @@ struct pin_agent {
     size_t          vt_lines;
     bool            saw_turn_activity;   /* status left "idle" this turn */
     bool            booted;              /* TUI reached its first idle prompt */
+    bool            switch_restored;     /* /switch printed its history block */
     char            sha_carry[160];      /* carry-over for raw-stdout SHA scan */
     size_t          sha_carry_len;
     pthread_mutex_t stdin_mu;            /* serialize writes to child stdin */
@@ -473,31 +477,45 @@ static void trace_cb_turn(void *ud) { (void)ud; }
 static void *trace_reader_fn(void *arg) {
     pin_agent *a = ((reader_args *)arg)->a;
     free(arg);
-    FILE *f = NULL;
-    for (int i = 0; i < 400 && a->trace_running && !f; i++) {
-        f = fopen(a->trace_path, "rb");
-        if (!f) usleep(25 * 1000);
+    int fd = -1;
+    for (int i = 0; i < 400 && a->trace_running && fd < 0; i++) {
+        fd = open(a->trace_path, O_RDONLY);
+        if (fd < 0) usleep(25 * 1000);
     }
     pin_tracestream *ts = NULL;
-    if (f) {
+    if (fd >= 0) {
         pin_tracestream_cb cb = {
             .ud = a, .on_answer = trace_cb_answer, .on_thinking = trace_cb_thinking,
             .on_tool_call = trace_cb_tool, .on_turn = trace_cb_turn,
         };
         ts = pin_tracestream_new(cb);
     }
-    char *line = NULL;
-    size_t cap = 0;
+    /* tail -f: read bytes, hold a partial trailing line, feed only complete
+     * '\n'-terminated lines (getline would hand us half-written lines at EOF,
+     * which corrupts the token/skip parse). */
+    pin_buf line;
+    pin_buf_init(&line);
+    char rb[8192];
     long long last_data = (long long)pin_monotonic_ms();
     bool flushed = true;
-    while (f && ts && a->trace_running) {
-        ssize_t n = getline(&line, &cap, f);
+    while (fd >= 0 && ts && a->trace_running) {
+        ssize_t n = read(fd, rb, sizeof(rb));
         if (n > 0) {
-            pin_tracestream_feed_line(ts, line, (size_t)n);
+            pin_buf_append(&line, rb, (size_t)n);
+            size_t start = 0;
+            for (size_t i = 0; i < line.len; i++) {
+                if (line.ptr[i] != '\n') continue;
+                pin_tracestream_feed_line(ts, line.ptr + start, i - start);
+                start = i + 1;
+            }
+            if (start > 0) {
+                memmove(line.ptr, line.ptr + start, line.len - start);
+                line.len -= start;
+                line.ptr[line.len] = '\0';
+            }
             last_data = (long long)pin_monotonic_ms();
             flushed = false;
         } else {
-            clearerr(f);
             if (!flushed && (long long)pin_monotonic_ms() - last_data > 250) {
                 pin_tracestream_flush(ts);
                 flushed = true;
@@ -505,9 +523,13 @@ static void *trace_reader_fn(void *arg) {
             usleep(20 * 1000);
         }
     }
-    if (ts) { pin_tracestream_flush(ts); pin_tracestream_free(ts); }
-    if (f) fclose(f);
-    free(line);
+    if (ts) {
+        if (line.len) pin_tracestream_feed_line(ts, line.ptr, line.len);
+        pin_tracestream_flush(ts);
+        pin_tracestream_free(ts);
+    }
+    pin_buf_free(&line);
+    if (fd >= 0) close(fd);
     pthread_mutex_lock(&a->mu);
     a->trace_running = false;
     pthread_cond_broadcast(&a->cv);
@@ -547,6 +569,7 @@ static void tui_process(pin_agent *a, const char *buf, size_t n, bool flush) {
         memcpy(scan + cl, buf, take);
         size_t tot = cl + take;
         capture_sha_in_buf(a, scan, tot);
+        if (memmem(scan, tot, "session history", 15)) a->switch_restored = true;
         size_t keep = tot < 120 ? tot : 120;
         memcpy(a->sha_carry, scan + tot - keep, keep);
         a->sha_carry_len = keep;
@@ -959,29 +982,54 @@ void pin_agent_free(pin_agent *a) {
     free(a);
 }
 
-/* KV mode: ask the agent to /save and block (bounded) until the reader
- * latches the SHA from "saved session <sha>". On success the workspace's
- * session_sha is persisted (by the reader); on timeout we fall through to
- * transcript re-prefill. */
+/* The newest <sha>.kv in ds4-agent's kvcache with mtime >= `since`, i.e.
+ * the session a just-issued /save wrote. Robust to TUI stdout noise --
+ * we read the SHA from the filesystem, not the screen. */
+static bool newest_saved_session(time_t since, char *out, size_t cap) {
+    const char *home = getenv("HOME");
+    if (!home) return false;
+    char dir[1024];
+    snprintf(dir, sizeof(dir), "%s/.ds4/kvcache", home);
+    DIR *d = opendir(dir);
+    if (!d) return false;
+    time_t newest = 0;
+    bool found = false;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        size_t L = strlen(e->d_name);
+        if (L < 4 || strcmp(e->d_name + L - 3, ".kv") != 0) continue;
+        if (strncmp(e->d_name, "sysprompt", 9) == 0) continue;
+        char fp[1200];
+        snprintf(fp, sizeof(fp), "%s/%s", dir, e->d_name);
+        struct stat st;
+        if (stat(fp, &st) == 0 && st.st_mtime >= since && st.st_mtime >= newest) {
+            newest = st.st_mtime;
+            snprintf(out, cap, "%.*s", (int)(L - 3), e->d_name);  /* strip ".kv" */
+            found = true;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+/* KV mode: ask the agent to /save, then wait (bounded) for the new KV
+ * file to appear on disk and read its SHA from the filename. On success
+ * the workspace's session_sha is persisted; on timeout the caller falls
+ * through to transcript re-prefill. */
 static bool kv_save_and_capture(pin_agent *a) {
-    pthread_mutex_lock(&a->sha_mu);
-    a->captured_sha[0] = '\0';
-    a->sha_pending = true;
-    pthread_mutex_unlock(&a->sha_mu);
+    time_t t0 = time(NULL);
     if (!stdin_write_line(a, "/save")) return false;
-    long ms = a->cfg.save_timeout_ms > 0 ? a->cfg.save_timeout_ms : 5000;
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += ms / 1000;
-    ts.tv_nsec += (ms % 1000) * 1000000L;
-    if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
-    pthread_mutex_lock(&a->sha_mu);
-    while (a->sha_pending)
-        if (pthread_cond_timedwait(&a->sha_cv, &a->sha_mu, &ts) != 0) break;
-    bool got = a->captured_sha[0] != '\0';
-    a->sha_pending = false;
-    pthread_mutex_unlock(&a->sha_mu);
-    return got;
+    long ms = a->cfg.save_timeout_ms > 0 ? a->cfg.save_timeout_ms : 8000;
+    long long deadline = (long long)pin_monotonic_ms() + ms;
+    char sha[64];
+    while ((long long)pin_monotonic_ms() < deadline) {
+        if (newest_saved_session(t0, sha, sizeof(sha))) {
+            pin_workspace_store_set_session_sha(a->ws, a->active_id, sha);
+            return true;
+        }
+        usleep(150 * 1000);
+    }
+    return false;
 }
 
 bool pin_agent_activate(pin_agent *a, const char *workspace_id, char **out_err) {
@@ -1041,10 +1089,18 @@ bool pin_agent_activate(pin_agent *a, const char *workspace_id, char **out_err) 
             if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
             pthread_cond_timedwait(&a->cv, &a->mu, &ts);
         }
+        /* The first idle can precede the system-prompt prefill; that prefill
+         * would overwrite a session loaded too early. Settle past it, then
+         * restore by the 8-char prefix (the form /switch resolves cleanly). */
+        usleep(2500 * 1000);
+        a->switch_restored = false;
         char cmd[128];
-        snprintf(cmd, sizeof(cmd), "/switch %s", meta.session_sha);
+        snprintf(cmd, sizeof(cmd), "/switch %.8s", meta.session_sha);
         stdin_write_line(a, cmd);
-        usleep(1000 * 1000);   /* let /switch load the KV before any prompt */
+        usleep(1500 * 1000);   /* let /switch load the KV before any prompt */
+        /* Never break continuity: if /switch did not restore (no history
+         * block), fall back to transcript re-prefill. */
+        if (!a->switch_restored) build_pending_resume(a, meta.id);
     } else {
         build_pending_resume(a, meta.id);
     }

@@ -130,16 +130,25 @@ structured `--trace` channel instead of un-rendering the TUI screen:
 - **stdin (pty/CR)** is the command channel: prompts, `/save`, `/switch`.
 - **stdout** is used only to answer CPR, detect the boot/idle status, and
   scan raw bytes for `saved session`/`switched to` SHA acks.
-- **Continuity is reliable** via transcript re-prefill; KV `/save`+`/switch`
-  is the *opportunistic fast path*. Verified live: after switch-away and
-  back, the agent recalled a fact set before the switch.
+- **Exact KV resume works** (the fast path). On switch-away, `/save`; the
+  written `~/.ds4/kvcache/<sha>.kv` is detected on disk (filename = SHA --
+  robust, no stdout parsing). On switch-back, after the agent's first idle
+  prompt plus a settle (the system-prompt prefill must finish or it would
+  overwrite a too-early load), `/switch <8-char prefix>` restores the KV.
+  Verified live: turn 1 "remember ZEBRA" -> switch away -> switch back ->
+  "what was the magic word?" answered "ZEBRA" with the recall turn showing
+  `cached=1955, suffix=18` -- i.e. the prior conversation came from the KV,
+  not a re-prefill (instant).
+- **Never breaks:** if `/switch` does not print its history block, the
+  workspace falls back to transcript re-prefill, so continuity holds even
+  when the fast path misses.
 
-Known rough edge: the KV `/save` ack is captured inconsistently (ds4-agent
-defers some saves to "a stable append-only point", so `saved session <sha>`
-may not arrive within the wait window). When it misses, the hybrid falls
-through to re-prefill -- continuity is preserved either way, just not instant.
-Making the fast path engage reliably is a tuning item (longer/again-on-defer
-save, or detecting the deferred-save completion).
+Implementation gotchas that mattered (all verified, see git log):
+- read the save SHA from the kvcache filename, not the TUI stdout;
+- wait for boot + settle before `/switch` (early load gets overwritten by
+  the system-prompt prefill);
+- the trace tailer must hold partial lines (a token line split mid-`hex=`
+  at EOF corrupts the prefill/skip count and drops the whole turn).
 
 ## (historical) KV resume via vterm — superseded by the trace tailer above
 

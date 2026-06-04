@@ -97,3 +97,35 @@ The "current" column keeps the newest/beta APIs (the original brief); the
 "smallest" column trades those for the minimum binary. All four are best verified
 by actually building + measuring (`bloaty`/`xcrun size`/`ls -l`) on the target
 machine — which is the plan once teleported.
+
+## Trade-offs: what each smaller variant gives up (keeping native/modern paint)
+
+Measured on a Windows build host (VS 18 / MSVC 19.50, Android SDK 36):
+
+| Platform | Current (modern) — measured | Smallest variant | What you lose | Hurts native/modern *paint*? |
+|---|---|---|---|---|
+| **Windows** | WRL + loader DLL — **21 KB exe + 159 KB `WebView2Loader.dll`** (verified rendering) | raw-COM + built-in loader → **single ~25 KB exe**, no DLL | WRL ergonomics (more verbose COM) | **No** — same Win32 window, same WebView2 engine |
+| **Android** | Kotlin + AndroidX — **80 KB** release APK (R8, verified rendering) | Java + no-AndroidX plain `Activity` → ~10–40 KB | `enableEdgeToEdge()` insets, predictive-back, Kotlin ergonomics | **Yes (some)** — edge-to-edge + predictive back are modern *paint/UX* |
+| **macOS** | SwiftUI `WebView` (macOS 26) ~100 KB | pure ObjC AppKit ~10–30 KB | newest SwiftUI API; needs macOS 26 either way | **No** — same NSWindow + WKWebView |
+| **iOS** | SwiftUI `WebView` (iOS 26) ~1–2 MB | single-file ObjC ~hundreds KB | newest SwiftUI API; auto safe-area handling | **No** (with trivial manual safe-area) |
+
+**The load-bearing insight:** every shell paints with the OS's native window + the
+OS's webview engine, so **none of the smaller variants change the rendered output.**
+What they trade away is *API modernity / developer ergonomics* — and, on Android
+only, two genuine modern-*paint* behaviours (edge-to-edge insets and predictive
+back) that are tied to AndroidX.
+
+**Recommendation for "keep native/modern paint, stay small":**
+- **Windows** — adopt the built-in loader. Single-file, zero paint cost; the only
+  downside is more verbose COM. (Skip the no-CRT ~4 KB build — fragile, no paint gain.)
+- **Android** — **keep** Kotlin + AndroidX. This is the one place dropping deps costs
+  modern paint/UX, and 80 KB is already almost entirely glue (the WebView engine is
+  a system package = 0 bytes in the APK). Saving ~50 KB isn't worth losing edge-to-edge.
+- **macOS / iOS** — **keep** SwiftUI `WebView` *if* macOS 26 / iOS 26 minimums are
+  acceptable (most modern, paint-identical). Switch to Objective-C only if you need
+  older-OS support: paint stays identical, you gain broad support + a smaller binary,
+  you lose the newest SwiftUI API. Not a paint decision — an OS-floor decision.
+
+Net: the only size cut that's purely free (no paint, no UX loss) is **Windows →
+built-in loader**. The rest trade modern API/UX for bytes that are already tiny, so
+"keep native/modern paint" argues for keeping the current variants everywhere else.

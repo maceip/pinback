@@ -12,8 +12,10 @@ WARN_FLAGS  ?= -Wall -Wextra -Wpedantic -Wshadow -Wstrict-prototypes \
                -Wmissing-prototypes -Wno-unused-parameter
 OPT_FLAGS   ?= -O2
 STD_FLAGS   ?= -std=c99 -D_POSIX_C_SOURCE=200809L
-
 CFLAGS  ?= $(OPT_FLAGS) $(DEBUG_FLAGS) $(WARN_FLAGS) $(STD_FLAGS) -Isrc
+ifdef WERROR
+CFLAGS  += -Werror
+endif
 
 ifeq ($(UNAME_S),Darwin)
 CFLAGS  += -D_DARWIN_C_SOURCE
@@ -66,11 +68,12 @@ TEST_SRCS := \
 	$(TEST_DIR)/test_http.c \
 	$(TEST_DIR)/test_workspace.c \
 	$(TEST_DIR)/test_agent.c \
+	$(TEST_DIR)/test_tracestream.c \
 	$(TEST_DIR)/test_main.c
 TEST_OBJS := $(patsubst $(TEST_DIR)/test_%.c,$(OBJ_DIR)/test_%.o,$(TEST_SRCS))
 TEST_BIN  := $(BUILD_DIR)/run_tests
 
-.PHONY: all clean test smoke help embed embed-check pinback-server fake-ds4-agent
+.PHONY: all clean test smoke help embed embed-check pinback-server fake-ds4-agent debug ci
 
 # Avoid parallel link races on fresh build/ trees (common on CI -j).
 .NOTPARALLEL: all test
@@ -92,9 +95,17 @@ $(GEN_STATIC): $(EMBED_SH) $(shell find $(UI_DIR) -type f 2>/dev/null)
 	@mkdir -p $(GEN_DIR)
 	bash $(EMBED_SH) > $(GEN_STATIC)
 
+debug:
+	@$(MAKE) clean
+	@$(MAKE) OPT_FLAGS=-O0 DEBUG_FLAGS=-g3 embed all
+
+ci: embed all test
+
 help:
 	@echo "pinback build targets:"
 	@echo "  make              Build build/pinback-server and build/fake-ds4-agent"
+	@echo "  make debug        Unoptimized build with debug symbols (-O0 -g3)"
+	@echo "  make ci           embed + all + test (CI compile/test gate)"
 	@echo "  make test         Build and run unit + integration tests"
 	@echo "  make smoke URL=…  Run live smoke against URL"
 	@echo "  make embed        Regenerate build/generated/static_assets.c from ui/app/"

@@ -21,16 +21,16 @@
 
 typedef struct {
     void *ud;
-    void (*on_answer)   (void *ud, const char *text, size_t len);
-    void (*on_thinking) (void *ud, const char *text, size_t len);
+    void (*on_answer)(void *ud, const char *text, size_t len);
+    void (*on_thinking)(void *ud, const char *text, size_t len);
     void (*on_tool_call)(void *ud, const char *raw_dsml, size_t len);
-    void (*on_turn)     (void *ud);   /* a new user turn began */
+    void (*on_turn)(void *ud); /* a new user turn began */
 } pin_tracestream_cb;
 
 typedef struct pin_tracestream pin_tracestream;
 
 pin_tracestream *pin_tracestream_new(pin_tracestream_cb cb);
-void             pin_tracestream_free(pin_tracestream *ts);
+void pin_tracestream_free(pin_tracestream *ts);
 
 /* Feed one raw trace line (trailing newline optional). */
 void pin_tracestream_feed_line(pin_tracestream *ts, const char *line, size_t len);

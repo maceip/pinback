@@ -33,6 +33,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -49,48 +50,58 @@
 
 static volatile sig_atomic_t g_stop = 0;
 
-static void on_signal(int sig) { (void)sig; g_stop = 1; }
-
-static void usage(FILE *fp) {
-    fputs(
-        "pinback-server: single-binary GUI for ds4-agent\n"
-        "\n"
-        "Usage: pinback-server [flags]\n"
-        "\n"
-        "  --bind ADDR        listen address (default 127.0.0.1:8088)\n"
-        "  --agent-bin PATH   ds4-agent binary (default 'ds4-agent' on PATH)\n"
-        "  --model PATH       --model passed through to ds4-agent\n"
-        "  --workspace PATH   create+activate a workspace at PATH on launch\n"
-        "  --root DIR         state root (default ~/.pinback)\n"
-        "  --ring-cap N       per-workspace ring size (default 4096)\n"
-        "  --web-dir DIR      serve UI from disk\n"
-        "  --dev              dev mode: read ui/app/ from disk\n"
-        "  --quiet            only warnings and errors\n"
-        "  --kv-resume        EXPERIMENTAL: drive ds4-agent's TUI for exact\n"
-        "                     /save+/switch KV resume. The KV mechanism works\n"
-        "                     (sessions are saved/restored), but prose\n"
-        "                     extraction from the TUI redraw stream is still\n"
-        "                     rough. Default off: clean transport + transcript\n"
-        "                     re-prefill, which preserves session state\n"
-        "                     robustly. See docs/architecture/transport-findings.md.\n"
-        "  --help, -h         show this message\n",
-        fp);
+static void on_signal(int sig)
+{
+    (void)sig;
+    g_stop = 1;
 }
 
-static bool parse_bind(const char *s, char *host, size_t hostcap, int *port) {
+static void usage(FILE *fp)
+{
+    fputs("pinback-server: single-binary GUI for ds4-agent\n"
+          "\n"
+          "Usage: pinback-server [flags]\n"
+          "\n"
+          "  --bind ADDR        listen address (default 127.0.0.1:8088)\n"
+          "  --agent-bin PATH   ds4-agent binary (default 'ds4-agent' on PATH)\n"
+          "  --model PATH       --model passed through to ds4-agent\n"
+          "  --workspace PATH   create+activate a workspace at PATH on launch\n"
+          "  --root DIR         state root (default ~/.pinback)\n"
+          "  --ring-cap N       per-workspace ring size (default 4096)\n"
+          "  --kvcache-dir DIR  ds4 KV cache dir (default $HOME/.ds4/kvcache)\n"
+          "  --web-dir DIR      serve UI from disk\n"
+          "  --dev              dev mode: read ui/app/ from disk\n"
+          "  --quiet            only warnings and errors\n"
+          "  --kv-resume        EXPERIMENTAL: drive ds4-agent's TUI for exact\n"
+          "                     /save+/switch KV resume. The KV mechanism works\n"
+          "                     (sessions are saved/restored), but prose\n"
+          "                     extraction from the TUI redraw stream is still\n"
+          "                     rough. Default off: clean transport + transcript\n"
+          "                     re-prefill, which preserves session state\n"
+          "                     robustly. See docs/architecture/transport-findings.md.\n"
+          "  --help, -h         show this message\n",
+          fp);
+}
+
+static bool parse_bind(const char *s, char *host, size_t hostcap, int *port)
+{
     if (s[0] == '[') {
         const char *rb = strchr(s, ']');
-        if (!rb || rb[1] != ':') return false;
+        if (!rb || rb[1] != ':')
+            return false;
         size_t hl = (size_t)(rb - s - 1);
-        if (hl >= hostcap) return false;
+        if (hl >= hostcap)
+            return false;
         memcpy(host, s + 1, hl);
         host[hl] = '\0';
         *port = atoi(rb + 2);
     } else {
         const char *colon = strrchr(s, ':');
-        if (!colon || colon == s) return false;
+        if (!colon || colon == s)
+            return false;
         size_t hl = (size_t)(colon - s);
-        if (hl >= hostcap) return false;
+        if (hl >= hostcap)
+            return false;
         memcpy(host, s, hl);
         host[hl] = '\0';
         *port = atoi(colon + 1);
@@ -98,50 +109,75 @@ static bool parse_bind(const char *s, char *host, size_t hostcap, int *port) {
     return *port > 0 && *port < 65536;
 }
 
-static int listen_on(const char *host, int port) {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        PIN_LOG_ERRF("boot.socket_fail", "errno=%d", errno);
+static int listen_on(const char *host, int port)
+{
+    char service[16];
+    snprintf(service, sizeof(service), "%d", port);
+
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+    const char *node = NULL;
+    if (host && host[0] && strcmp(host, "0.0.0.0") != 0) {
+        hints.ai_flags &= ~AI_PASSIVE;
+        node = host;
+    }
+
+    struct addrinfo *res = NULL;
+    int gai = getaddrinfo(node, service, &hints, &res);
+    if (gai != 0) {
+        PIN_LOG_ERRF("boot.bad_host", "host=%s gai=%s", host ? host : "(any)", gai_strerror(gai));
         return -1;
     }
-    int yes = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
+
+    int listen_fd = -1;
+    for (struct addrinfo *ai = res; ai; ai = ai->ai_next) {
+        int fd = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0)
+            continue;
+        int yes = 1;
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
 #ifdef SO_REUSEPORT
-    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
+        setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
 #endif
-    struct sockaddr_in sa = {0};
-    sa.sin_family = AF_INET;
-    sa.sin_port   = htons((uint16_t)port);
-    if (!host || strcmp(host, "0.0.0.0") == 0) {
-        sa.sin_addr.s_addr = htonl(INADDR_ANY);
-    } else if (strcmp(host, "127.0.0.1") == 0 || strcmp(host, "localhost") == 0) {
-        sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    } else if (inet_pton(AF_INET, host, &sa.sin_addr) != 1) {
-        PIN_LOG_ERRF("boot.bad_host", "host=%s", host);
-        close(fd);
+#ifdef IPV6_V6ONLY
+        if (ai->ai_family == AF_INET6) {
+            int v6only = 0;
+            setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
+        }
+#endif
+        if (bind(fd, ai->ai_addr, ai->ai_addrlen) != 0) {
+            close(fd);
+            continue;
+        }
+        if (listen(fd, 64) != 0) {
+            close(fd);
+            continue;
+        }
+        listen_fd = fd;
+        break;
+    }
+    freeaddrinfo(res);
+
+    if (listen_fd < 0) {
+        PIN_LOG_ERRF("boot.bind_fail", "host=%s port=%d errno=%d", host ? host : "0.0.0.0", port,
+                     errno);
         return -1;
     }
-    if (bind(fd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
-        PIN_LOG_ERRF("boot.bind_fail", "host=%s port=%d errno=%d",
-                     host, port, errno);
-        close(fd);
-        return -1;
-    }
-    if (listen(fd, 64) < 0) {
-        PIN_LOG_ERRF("boot.listen_fail", "errno=%d", errno);
-        close(fd);
-        return -1;
-    }
-    return fd;
+    return listen_fd;
 }
 
-static char *default_root(void) {
+static char *default_root(void)
+{
     const char *home = getenv("HOME");
     if (!home || !*home) {
         struct passwd *pw = getpwuid(getuid());
-        if (pw) home = pw->pw_dir;
+        if (pw)
+            home = pw->pw_dir;
     }
-    if (!home) return pin_xstrdup("./.pinback");
+    if (!home)
+        return pin_xstrdup("./.pinback");
     char path[2048];
     snprintf(path, sizeof(path), "%s/.pinback", home);
     return pin_xstrdup(path);
@@ -149,49 +185,68 @@ static char *default_root(void) {
 
 typedef struct {
     pin_app *app;
-    int      fd;
+    int fd;
 } conn_args;
 
-static void *connection_thread(void *arg) {
+static void *connection_thread(void *arg)
+{
     conn_args *ca = arg;
     pin_handle_connection(ca->app, ca->fd);
     free(ca);
     return NULL;
 }
 
-int main(int argc, char **argv) {
-    const char *bind_addr      = "127.0.0.1:8088";
-    const char *agent_bin      = "ds4-agent";
-    const char *model_path     = NULL;
+int main(int argc, char **argv)
+{
+    const char *bind_addr = "127.0.0.1:8088";
+    const char *agent_bin = "ds4-agent";
+    const char *model_path = NULL;
     const char *workspace_path = NULL;
-    char       *root_dir       = NULL;
-    size_t      ring_cap       = 4096;
-    const char *web_dir        = NULL;
-    bool        dev_mode       = false;
-    bool        quiet          = false;
-    bool        kv_resume      = false;
+    char *root_dir = NULL;
+    size_t ring_cap = 4096;
+    const char *web_dir = NULL;
+    const char *kvcache_dir = NULL;
+    bool dev_mode = false;
+    bool quiet = false;
+    bool kv_resume = false;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
-        if (!strcmp(a, "-h") || !strcmp(a, "--help")) { usage(stdout); return 0; }
-        else if (!strcmp(a, "--bind")       && i + 1 < argc) bind_addr      = argv[++i];
-        else if (!strcmp(a, "--agent-bin")  && i + 1 < argc) agent_bin      = argv[++i];
-        else if (!strcmp(a, "--model")      && i + 1 < argc) model_path     = argv[++i];
-        else if (!strcmp(a, "--workspace")  && i + 1 < argc) workspace_path = argv[++i];
-        else if (!strcmp(a, "--root")       && i + 1 < argc) root_dir       = pin_xstrdup(argv[++i]);
-        else if (!strcmp(a, "--ring-cap")   && i + 1 < argc) ring_cap = (size_t)strtoul(argv[++i], NULL, 10);
-        else if (!strcmp(a, "--web-dir")    && i + 1 < argc) web_dir = argv[++i];
-        else if (!strcmp(a, "--dev"))                          dev_mode = true;
-        else if (!strcmp(a, "--quiet"))                        quiet = true;
-        else if (!strcmp(a, "--kv-resume"))                    kv_resume = true;
+        if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
+            usage(stdout);
+            return 0;
+        } else if (!strcmp(a, "--bind") && i + 1 < argc)
+            bind_addr = argv[++i];
+        else if (!strcmp(a, "--agent-bin") && i + 1 < argc)
+            agent_bin = argv[++i];
+        else if (!strcmp(a, "--model") && i + 1 < argc)
+            model_path = argv[++i];
+        else if (!strcmp(a, "--workspace") && i + 1 < argc)
+            workspace_path = argv[++i];
+        else if (!strcmp(a, "--root") && i + 1 < argc)
+            root_dir = pin_xstrdup(argv[++i]);
+        else if (!strcmp(a, "--ring-cap") && i + 1 < argc)
+            ring_cap = (size_t)strtoul(argv[++i], NULL, 10);
+        else if (!strcmp(a, "--kvcache-dir") && i + 1 < argc)
+            kvcache_dir = argv[++i];
+        else if (!strcmp(a, "--web-dir") && i + 1 < argc)
+            web_dir = argv[++i];
+        else if (!strcmp(a, "--dev"))
+            dev_mode = true;
+        else if (!strcmp(a, "--quiet"))
+            quiet = true;
+        else if (!strcmp(a, "--kv-resume"))
+            kv_resume = true;
         else {
             fprintf(stderr, "pinback-server: unknown flag '%s'\n", a);
             usage(stderr);
             return 2;
         }
     }
-    if (!root_dir) root_dir = default_root();
-    if (dev_mode && !web_dir) web_dir = "ui/app";
+    if (!root_dir)
+        root_dir = default_root();
+    if (dev_mode && !web_dir)
+        web_dir = "ui/app";
 
     pin_log_init("pinback-server", quiet ? PIN_LOG_WARN : PIN_LOG_INFO);
 
@@ -204,7 +259,7 @@ int main(int argc, char **argv) {
     }
 
     signal(SIGPIPE, SIG_IGN);
-    signal(SIGINT,  on_signal);
+    signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
     pin_workspace_store *store = pin_workspace_store_open(root_dir, ring_cap);
@@ -215,9 +270,10 @@ int main(int argc, char **argv) {
     }
 
     pin_agent_config acfg = {
-        .agent_bin       = agent_bin,
-        .model_path      = model_path,
-        .spawn_ready_ms  = 30000,
+        .agent_bin = agent_bin,
+        .model_path = model_path,
+        .kvcache_dir = kvcache_dir,
+        .spawn_ready_ms = 30000,
         /* save_timeout_ms = 0 means "skip /save". ds4-agent in
          * --non-interactive mode treats stdin lines as user prompts,
          * so /save is not a runtime command there. The architectural
@@ -229,7 +285,7 @@ int main(int argc, char **argv) {
          * dance directly on stdin. */
         .save_timeout_ms = kv_resume ? 8000 : 0,
         .term_timeout_ms = 5000,
-        .kv_resume       = kv_resume,
+        .kv_resume = kv_resume,
     };
     pin_agent *agent = pin_agent_new(&acfg, store);
     if (!agent) {
@@ -258,10 +314,8 @@ int main(int argc, char **argv) {
             active_id = found;
         } else {
             char *err = NULL;
-            if (!pin_workspace_store_create(store, workspace_path, NULL,
-                                            &active_id, &err)) {
-                fprintf(stderr, "pinback-server: --workspace failed: %s\n",
-                        err ? err : "unknown");
+            if (!pin_workspace_store_create(store, workspace_path, NULL, &active_id, &err)) {
+                fprintf(stderr, "pinback-server: --workspace failed: %s\n", err ? err : "unknown");
                 free(err);
                 pin_agent_free(agent);
                 pin_workspace_store_close(store);
@@ -276,8 +330,7 @@ int main(int argc, char **argv) {
     if (active_id) {
         char *err = NULL;
         if (!pin_agent_activate(agent, active_id, &err)) {
-            PIN_LOG_WARNF("boot.activate_fail", "id=%s err=%s",
-                          active_id, err ? err : "?");
+            PIN_LOG_WARNF("boot.activate_fail", "id=%s err=%s", active_id, err ? err : "?");
             free(err);
         }
     }
@@ -292,29 +345,25 @@ int main(int argc, char **argv) {
     }
 
     pin_app app = {
-        .ws         = store,
-        .agent      = agent,
-        .web_root   = web_dir,
-        .bind_str   = bind_addr,
+        .ws = store,
+        .agent = agent,
+        .web_root = web_dir,
+        .bind_str = bind_addr,
         .started_ms = (long long)pin_monotonic_ms(),
-        .dev_mode   = dev_mode,
+        .dev_mode = dev_mode,
     };
 
-    PIN_LOG_INFOF(PIN_EV_BOOT_LISTEN,
-        "bind=%s agent_bin=%s root=%s active_id=%s",
-        bind_addr, agent_bin, root_dir,
-        active_id ? active_id : "(none)");
+    PIN_LOG_INFOF(PIN_EV_BOOT_LISTEN, "bind=%s agent_bin=%s root=%s active_id=%s", bind_addr,
+                  agent_bin, root_dir, active_id ? active_id : "(none)");
     fprintf(stderr,
-        "\n"
-        "  pinback-server up at http://%s\n"
-        "  agent: %s%s%s\n"
-        "  state root: %s\n"
-        "  open the URL above in your browser; ^C to stop\n"
-        "\n",
-        bind_addr, agent_bin,
-        model_path ? "  --model " : "",
-        model_path ? model_path   : "",
-        root_dir);
+            "\n"
+            "  pinback-server up at http://%s\n"
+            "  agent: %s%s%s\n"
+            "  state root: %s\n"
+            "  open the URL above in your browser; ^C to stop\n"
+            "\n",
+            bind_addr, agent_bin, model_path ? "  --model " : "", model_path ? model_path : "",
+            root_dir);
     free(active_id);
 
     while (!g_stop) {
@@ -326,11 +375,12 @@ int main(int argc, char **argv) {
             }
             continue;
         }
-        struct sockaddr_in cli;
+        struct sockaddr_storage cli;
         socklen_t cl = sizeof(cli);
         int cfd = accept(sfd, (struct sockaddr *)&cli, &cl);
         if (cfd < 0) {
-            if (errno == EINTR || errno == EAGAIN) continue;
+            if (errno == EINTR || errno == EAGAIN)
+                continue;
             PIN_LOG_WARNF("accept_err", "errno=%d", errno);
             continue;
         }
@@ -345,7 +395,7 @@ int main(int argc, char **argv) {
 
         conn_args *ca = pin_xcalloc(1, sizeof(*ca));
         ca->app = &app;
-        ca->fd  = cfd;
+        ca->fd = cfd;
 
         pthread_t t;
         pthread_attr_t attr;

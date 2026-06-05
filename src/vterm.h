@@ -19,12 +19,12 @@
 typedef struct pin_vterm pin_vterm;
 
 pin_vterm *pin_vterm_new(int cols, int rows);
-void       pin_vterm_free(pin_vterm *vt);
+void pin_vterm_free(pin_vterm *vt);
 
 /* Feed raw bytes from the agent's stdout. Returns the number of CPR
  * (ESC[6n) requests observed in this chunk; the caller must write
  * "\x1b[1;200R" to the agent's stdin that many times or the agent hangs. */
-int  pin_vterm_feed(pin_vterm *vt, const char *bytes, size_t n);
+int pin_vterm_feed(pin_vterm *vt, const char *bytes, size_t n);
 
 /* Append the full current content region (scrolled-off history + the
  * rows above the editor widget) to `out`, with one '\n' per row. Content

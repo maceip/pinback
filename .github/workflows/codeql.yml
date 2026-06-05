@@ -1,0 +1,53 @@
+name: codeql
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "Makefile"
+      - ".github/workflows/codeql.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "Makefile"
+      - ".github/workflows/codeql.yml"
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ["cpp"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended,security-and-quality
+
+      - name: Install build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential
+
+      - name: Build for analysis
+        run: make embed all
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"

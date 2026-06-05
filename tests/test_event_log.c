@@ -75,6 +75,20 @@ static void *sub_thread(void *arg) {
     return NULL;
 }
 
+typedef struct {
+    pin_event_log *log;
+    int            fd;
+    long long      client_generation;
+} sub_gen_args;
+
+static void *sub_thread_gen(void *arg) {
+    sub_gen_args *a = arg;
+    pin_subscriber_callbacks cb = {0};
+    pin_event_log_serve_subscriber(a->log, a->fd, PIN_SUB_KIND_SSE,
+                                   a->client_generation, -1, cb);
+    return NULL;
+}
+
 static int count_data_lines(const char *buf, size_t len) {
     int n = 0;
     for (size_t i = 0; i + 5 < len; i++) {
@@ -128,8 +142,54 @@ static void test_fanout(void) {
     unlink(path); free(path);
 }
 
+static void test_generation_mismatch(void) {
+    char *path = unique_path();
+    unlink(path);
+    pin_event_log *log = pin_event_log_open(path, 8);
+    pin_event_log_status st;
+    pin_event_log_status_get(log, &st);
+    long long gen1 = st.generation;
+    pin_event_log_append(log, "user", "{\"text\":\"a\"}", 12);
+    pin_event_log_close(log);
+
+    pin_event_log *log2 = pin_event_log_open(path, 8);
+    pin_event_log_status_get(log2, &st);
+    EXPECT(st.generation > gen1, "generation bumps on reopen");
+
+    int sp[2];
+    socketpair(AF_UNIX, SOCK_STREAM, 0, sp);
+    sub_gen_args ga = {.log = log2, .fd = sp[1], .client_generation = gen1};
+    pthread_t t;
+    pthread_create(&t, NULL, sub_thread_gen, &ga);
+    char buf[8192];
+    size_t total = 0;
+    bool saw = false;
+    for (int i = 0; i < 100; i++) {
+        usleep(20 * 1000);
+        ssize_t n = recv(sp[0], buf + total, sizeof(buf) - total, MSG_DONTWAIT);
+        if (n > 0) {
+            total += (size_t)n;
+            if (total < sizeof(buf)) buf[total] = '\0';
+            if (strstr(buf, "generation_mismatch") != NULL) {
+                saw = true;
+                break;
+            }
+        }
+    }
+    EXPECT(saw, "stale client generation emits generation_mismatch");
+
+    close(sp[0]);
+    shutdown(sp[1], SHUT_RDWR);
+    close(sp[1]);
+    pthread_join(t, NULL);
+    pin_event_log_close(log2);
+    unlink(path);
+    free(path);
+}
+
 int run_event_log_tests(void) {
     test_open_append_status();
     test_fanout();
+    test_generation_mismatch();
     return fails;
 }

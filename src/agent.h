@@ -32,29 +32,30 @@
 #include <sys/types.h>
 
 typedef enum {
-    PIN_AGENT_STATE_IDLE = 0,    /* no child; no active workspace */
-    PIN_AGENT_STATE_SPAWNING,    /* child forked, waiting for ready */
-    PIN_AGENT_STATE_READY,       /* idle, ready to take input */
-    PIN_AGENT_STATE_BUSY,        /* a turn is in flight */
-    PIN_AGENT_STATE_DRAINING,    /* shutting down or switching */
-    PIN_AGENT_STATE_DEAD,        /* child crashed; awaiting restart */
+    PIN_AGENT_STATE_IDLE = 0, /* no child; no active workspace */
+    PIN_AGENT_STATE_SPAWNING, /* child forked, waiting for ready */
+    PIN_AGENT_STATE_READY,    /* idle, ready to take input */
+    PIN_AGENT_STATE_BUSY,     /* a turn is in flight */
+    PIN_AGENT_STATE_DRAINING, /* shutting down or switching */
+    PIN_AGENT_STATE_DEAD,     /* child crashed; awaiting restart */
 } pin_agent_state;
 
 typedef struct {
-    const char *agent_bin;       /* e.g. "ds4-agent" or absolute path */
-    const char *model_path;      /* optional --model arg, may be NULL */
-    int         spawn_ready_ms;  /* default 5000 */
-    int         save_timeout_ms; /* default 5000 */
-    int         term_timeout_ms; /* default 3000 */
-    bool        kv_resume;       /* drive the TUI for exact /save + /switch
-                                  * KV session resume (default off: clean
-                                  * non-interactive transport + re-prefill) */
+    const char *agent_bin;   /* e.g. "ds4-agent" or absolute path */
+    const char *model_path;  /* optional --model arg, may be NULL */
+    const char *kvcache_dir; /* ds4 KV files dir; NULL -> $HOME/.ds4/kvcache */
+    int spawn_ready_ms;      /* default 5000 */
+    int save_timeout_ms;     /* default 5000 */
+    int term_timeout_ms;     /* default 3000 */
+    bool kv_resume;          /* drive the TUI for exact /save + /switch
+                              * KV session resume (default off: clean
+                              * non-interactive transport + re-prefill) */
 } pin_agent_config;
 
 typedef struct pin_agent pin_agent;
 
 pin_agent *pin_agent_new(const pin_agent_config *cfg, pin_workspace_store *ws);
-void       pin_agent_free(pin_agent *a);
+void pin_agent_free(pin_agent *a);
 
 /* Activate a workspace. If the agent is already bound to a different
  * workspace, runs the save/kill/respawn dance synchronously. Returns
@@ -63,8 +64,8 @@ bool pin_agent_activate(pin_agent *a, const char *workspace_id, char **out_err);
 
 /* Submit one user prompt to the active workspace. Returns false if the
  * agent is not ready or no workspace is active. */
-bool pin_agent_submit(pin_agent *a, const char *workspace_id,
-                      const char *user_text, char **out_err);
+bool pin_agent_submit(pin_agent *a, const char *workspace_id, const char *user_text,
+                      char **out_err);
 
 /* Reset: kills the child, truncates the workspace's events.log via the
  * store, and respawns fresh in the same dir. */
@@ -75,12 +76,12 @@ void pin_agent_abort(pin_agent *a);
 
 typedef struct {
     pin_agent_state state;
-    char            active_workspace_id[64];
-    char            active_workspace_path[1024];
-    pid_t           child_pid;
-    long long       last_spawn_ms;
-    long long       turns_total;
-    long long       restarts_total;
+    char active_workspace_id[64];
+    char active_workspace_path[1024];
+    pid_t child_pid;
+    long long last_spawn_ms;
+    long long turns_total;
+    long long restarts_total;
 } pin_agent_status;
 
 void pin_agent_status_get(pin_agent *a, pin_agent_status *out);

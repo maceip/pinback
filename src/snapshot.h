@@ -23,13 +23,11 @@ bool pin_snapshot_begin(const char *git_dir, const char *work_tree);
 
 /* Append a unified diff (no color) of changes since the last begin() to
  * `out`. out is left empty when nothing changed. Returns false on error. */
-bool pin_snapshot_diff(const char *git_dir, const char *work_tree,
-                       pin_buf *out);
+bool pin_snapshot_diff(const char *git_dir, const char *work_tree, pin_buf *out);
 
 /* Reverse-apply `patch` (a unified diff: one file, one or more hunks)
  * against the worktree, undoing those changes. errbuf is set on failure. */
-bool pin_snapshot_revert(const char *git_dir, const char *work_tree,
-                         const char *patch, size_t patch_len,
-                         char *errbuf, size_t errcap);
+bool pin_snapshot_revert(const char *git_dir, const char *work_tree, const char *patch,
+                         size_t patch_len, char *errbuf, size_t errcap);
 
 #endif

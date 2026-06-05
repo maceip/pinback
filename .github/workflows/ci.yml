@@ -1,0 +1,157 @@
+# Core pinback-server CI: lint, static analysis, tests, debug artifacts, attestations.
+name: ci
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "ui/**"
+      - "scripts/**"
+      - "Makefile"
+      - ".clang-format"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/codeql.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "ui/**"
+      - "scripts/**"
+      - "Makefile"
+      - ".clang-format"
+      - ".github/workflows/ci.yml"
+      - ".github/workflows/codeql.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    name: workflow lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install actionlint
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash \
+            | bash -s -- 1.7.7
+          sudo mv actionlint /usr/local/bin/
+      - run: actionlint -color
+
+  lint:
+    name: c lint + compile
+    runs-on: ubuntu-latest
+    needs: [actionlint]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-format cppcheck build-essential
+      - run: bash scripts/ci/lint.sh
+      - run: bash scripts/ci/cppcheck.sh
+
+  test:
+    name: test (${{ matrix.os }})
+    needs: [lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            setup: ""
+          - os: ubuntu-latest
+            setup: |
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends build-essential
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        if: matrix.setup != ''
+        run: ${{ matrix.setup }}
+      - name: Unit tests
+        run: make ci
+      - name: Verify binaries
+        run: |
+          test -x build/pinback-server
+          test -x build/fake-ds4-agent
+          test -x build/run_tests
+
+  debug-server:
+    name: debug server (${{ matrix.os }})
+    needs: [test]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            id: macos
+            archive: pinback-server-macos-debug.tar.gz
+            setup: ""
+          - os: ubuntu-latest
+            id: linux
+            archive: pinback-server-linux-debug.tar.gz
+            setup: |
+              sudo apt-get update
+              sudo apt-get install -y --no-install-recommends build-essential
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build deps
+        if: matrix.setup != ''
+        run: ${{ matrix.setup }}
+      - name: Debug build
+        env:
+          OPT_FLAGS: -O0
+          DEBUG_FLAGS: -g3
+        run: make embed all test
+      - name: Package debug server
+        run: |
+          mkdir -p dist
+          tar -czf "dist/${{ matrix.archive }}" \
+            -C build pinback-server fake-ds4-agent run_tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.id }}-debug-server
+          path: dist/${{ matrix.archive }}
+          if-no-files-found: error
+      - name: Attest debug server bundle
+        uses: actions/attest@v4
+        with:
+          subject-path: dist/${{ matrix.archive }}
+          show-summary: true
+
+  verify-attestations:
+    name: verify attestations
+    needs: [debug-server]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: "*-debug-server"
+          path: dist
+          merge-multiple: true
+      - name: Install GitHub CLI attestation support
+        run: gh version
+      - name: Verify SLSA provenance
+        run: |
+          shopt -s nullglob
+          for f in dist/*.tar.gz; do
+            echo "verifying $f"
+            gh attestation verify "$f" --repo "${{ github.repository }}"
+          done

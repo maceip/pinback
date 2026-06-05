@@ -19,21 +19,20 @@
  * ------------------------------------------------------------------ */
 
 typedef struct {
-    char  *ptr;
+    char *ptr;
     size_t len;
     size_t cap;
 } pin_buf;
 
-void  pin_buf_init(pin_buf *b);
-void  pin_buf_reserve(pin_buf *b, size_t add);
-void  pin_buf_append(pin_buf *b, const void *p, size_t n);
-void  pin_buf_putc(pin_buf *b, char c);
-void  pin_buf_puts(pin_buf *b, const char *s);
-void  pin_buf_printf(pin_buf *b, const char *fmt, ...)
-        __attribute__((format(printf, 2, 3)));
-void  pin_buf_vprintf(pin_buf *b, const char *fmt, va_list ap);
-void  pin_buf_clear(pin_buf *b);
-void  pin_buf_free(pin_buf *b);
+void pin_buf_init(pin_buf *b);
+void pin_buf_reserve(pin_buf *b, size_t add);
+void pin_buf_append(pin_buf *b, const void *p, size_t n);
+void pin_buf_putc(pin_buf *b, char c);
+void pin_buf_puts(pin_buf *b, const char *s);
+void pin_buf_printf(pin_buf *b, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+void pin_buf_vprintf(pin_buf *b, const char *fmt, va_list ap);
+void pin_buf_clear(pin_buf *b);
+void pin_buf_free(pin_buf *b);
 char *pin_buf_detach(pin_buf *b);
 
 /* ------------------------------------------------------------------ *
@@ -50,9 +49,9 @@ char *pin_xstrndup(const char *s, size_t n);
  * Time                                                               *
  * ------------------------------------------------------------------ */
 
-uint64_t pin_wall_ms(void);                       /* Unix ms */
-uint64_t pin_monotonic_ms(void);                  /* CLOCK_MONOTONIC ms */
-void     pin_iso8601_ms(char *out, size_t cap);   /* "..Z", cap >= 32 */
+uint64_t pin_wall_ms(void);                 /* Unix ms */
+uint64_t pin_monotonic_ms(void);            /* CLOCK_MONOTONIC ms */
+void pin_iso8601_ms(char *out, size_t cap); /* "..Z", cap >= 32 */
 
 /* ------------------------------------------------------------------ *
  * Strings                                                            *
@@ -109,8 +108,8 @@ bool pin_json_find_key(const char *obj, const char *key, const char **out);
 typedef struct {
     uint32_t state[5];
     uint64_t count;
-    uint8_t  block[64];
-    size_t   used;
+    uint8_t block[64];
+    size_t used;
 } pin_sha1;
 
 void pin_sha1_init(pin_sha1 *c);

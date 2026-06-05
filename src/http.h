@@ -27,44 +27,38 @@
 
 #include "util.h"
 
-#define PIN_HTTP_MAX_HEADERS_BYTES (32  * 1024)
-#define PIN_HTTP_MAX_BODY_BYTES    (8   * 1024 * 1024)
-#define PIN_HTTP_IO_TIMEOUT_SEC    30
+#define PIN_HTTP_MAX_HEADERS_BYTES (32 * 1024)
+#define PIN_HTTP_MAX_BODY_BYTES (8 * 1024 * 1024)
+#define PIN_HTTP_IO_TIMEOUT_SEC 30
 
 typedef struct {
-    char  *method;
-    char  *path;
-    char  *query;
-    char  *headers_blob;
+    char *method;
+    char *path;
+    char *query;
+    char *headers_blob;
     size_t headers_len;
-    char  *body;
+    char *body;
     size_t body_len;
-    char   request_id[33];
+    char request_id[33];
 } pin_request;
 
 void pin_request_free(pin_request *r);
 
 bool pin_http_read_request(int fd, pin_request *r);
 
-bool pin_http_header(const pin_request *r, const char *name,
-                     const char **out, size_t *out_len);
+bool pin_http_header(const pin_request *r, const char *name, const char **out, size_t *out_len);
 
-bool pin_http_query(const pin_request *r, const char *key,
-                    const char **out, size_t *out_len);
+bool pin_http_query(const pin_request *r, const char *key, const char **out, size_t *out_len);
 
 /* Fixed-body response. r may be NULL to skip X-Request-Id (used for
  * pre-parse error replies). content_type may be NULL for 204. */
-bool pin_http_respond(int fd, const pin_request *r, int status,
-                      const char *content_type,
+bool pin_http_respond(int fd, const pin_request *r, int status, const char *content_type,
                       const char *body, size_t body_len);
 
-bool pin_http_respond_text(int fd, const pin_request *r,
-                           int status, const char *text);
-bool pin_http_respond_json(int fd, const pin_request *r,
-                           int status, const pin_buf *body);
+bool pin_http_respond_text(int fd, const pin_request *r, int status, const char *text);
+bool pin_http_respond_json(int fd, const pin_request *r, int status, const pin_buf *body);
 /* Sanitized error JSON: {"code","message","request_id"}. */
-bool pin_http_respond_error(int fd, const pin_request *r,
-                            int status, const char *code,
+bool pin_http_respond_error(int fd, const pin_request *r, int status, const char *code,
                             const char *message);
 
 /* SSE prologue. Caller emits events afterwards via pin_http_sse_emit and
@@ -73,8 +67,7 @@ bool pin_http_begin_sse(int fd, const pin_request *r);
 
 /* One SSE event. id < 0 omits `id:`. event may be NULL. data is sent
  * verbatim (callers JSON-encode if needed). */
-bool pin_http_sse_emit(int fd, long long id, const char *event,
-                       const char *data, size_t data_len);
+bool pin_http_sse_emit(int fd, long long id, const char *event, const char *data, size_t data_len);
 
 /* `:\n\n` heartbeat. */
 bool pin_http_sse_keepalive(int fd);
@@ -83,14 +76,13 @@ bool pin_http_sse_keepalive(int fd);
  * and sends 101 with Sec-WebSocket-Accept = base64(sha1(key + GUID)). */
 bool pin_ws_upgrade(int fd, const pin_request *r);
 
-bool pin_ws_send_text (int fd, const char *data, size_t len);
+bool pin_ws_send_text(int fd, const char *data, size_t len);
 bool pin_ws_send_close(int fd, uint16_t code);
-bool pin_ws_send_pong (int fd, const uint8_t *payload, size_t len);
+bool pin_ws_send_pong(int fd, const uint8_t *payload, size_t len);
 
 /* Read one frame. *out_payload is malloc'd (NUL-terminated). Caller frees.
  * Returns false on protocol error / disconnect; caller should send a
  * close frame and close the socket. */
-bool pin_ws_read_frame(int fd, int *out_opcode,
-                       uint8_t **out_payload, size_t *out_len);
+bool pin_ws_read_frame(int fd, int *out_opcode, uint8_t **out_payload, size_t *out_len);
 
 #endif

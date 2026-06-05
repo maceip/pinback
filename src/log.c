@@ -22,30 +22,41 @@ struct pin_log_rec {
 };
 
 static pthread_mutex_t g_log_mu = PTHREAD_MUTEX_INITIALIZER;
-static pin_log_level   g_log_min = PIN_LOG_INFO;
-static char            g_log_service[32] = "pinback";
+static pin_log_level g_log_min = PIN_LOG_INFO;
+static char g_log_service[32] = "pinback";
 
-void pin_log_init(const char *service, pin_log_level min_level) {
+void pin_log_init(const char *service, pin_log_level min_level)
+{
     if (service && *service) {
         snprintf(g_log_service, sizeof(g_log_service), "%s", service);
     }
     g_log_min = min_level;
 }
 
-void pin_log_set_min_level(pin_log_level lvl) { g_log_min = lvl; }
+void pin_log_set_min_level(pin_log_level lvl)
+{
+    g_log_min = lvl;
+}
 
-static const char *level_name(pin_log_level lvl) {
+static const char *level_name(pin_log_level lvl)
+{
     switch (lvl) {
-    case PIN_LOG_DEBUG: return "debug";
-    case PIN_LOG_INFO:  return "info";
-    case PIN_LOG_WARN:  return "warn";
-    case PIN_LOG_ERROR: return "error";
+    case PIN_LOG_DEBUG:
+        return "debug";
+    case PIN_LOG_INFO:
+        return "info";
+    case PIN_LOG_WARN:
+        return "warn";
+    case PIN_LOG_ERROR:
+        return "error";
     }
     return "info";
 }
 
-pin_log_rec *pin_log_begin(pin_log_level lvl, const char *event) {
-    if ((int)lvl < (int)g_log_min) return NULL;
+pin_log_rec *pin_log_begin(pin_log_level lvl, const char *event)
+{
+    if ((int)lvl < (int)g_log_min)
+        return NULL;
     pin_log_rec *r = pin_xmalloc(sizeof(*r));
     pin_buf_init(&r->buf);
     r->lvl = lvl;
@@ -63,14 +74,17 @@ pin_log_rec *pin_log_begin(pin_log_level lvl, const char *event) {
     return r;
 }
 
-static void emit_key(pin_log_rec *r, const char *k) {
+static void emit_key(pin_log_rec *r, const char *k)
+{
     pin_buf_putc(&r->buf, ',');
     pin_json_str(&r->buf, k);
     pin_buf_putc(&r->buf, ':');
 }
 
-void pin_log_kv_str(pin_log_rec *r, const char *k, const char *v) {
-    if (!r) return;
+void pin_log_kv_str(pin_log_rec *r, const char *k, const char *v)
+{
+    if (!r)
+        return;
     emit_key(r, k);
     if (!v) {
         pin_buf_puts(&r->buf, "null");
@@ -84,26 +98,34 @@ void pin_log_kv_str(pin_log_rec *r, const char *k, const char *v) {
     pin_buf_free(&clean);
 }
 
-void pin_log_kv_int(pin_log_rec *r, const char *k, long long v) {
-    if (!r) return;
+void pin_log_kv_int(pin_log_rec *r, const char *k, long long v)
+{
+    if (!r)
+        return;
     emit_key(r, k);
     pin_buf_printf(&r->buf, "%lld", v);
 }
 
-void pin_log_kv_u64(pin_log_rec *r, const char *k, unsigned long long v) {
-    if (!r) return;
+void pin_log_kv_u64(pin_log_rec *r, const char *k, unsigned long long v)
+{
+    if (!r)
+        return;
     emit_key(r, k);
     pin_buf_printf(&r->buf, "%llu", v);
 }
 
-void pin_log_kv_bool(pin_log_rec *r, const char *k, int v) {
-    if (!r) return;
+void pin_log_kv_bool(pin_log_rec *r, const char *k, int v)
+{
+    if (!r)
+        return;
     emit_key(r, k);
     pin_buf_puts(&r->buf, v ? "true" : "false");
 }
 
-void pin_log_kv_msgf(pin_log_rec *r, const char *fmt, ...) {
-    if (!r) return;
+void pin_log_kv_msgf(pin_log_rec *r, const char *fmt, ...)
+{
+    if (!r)
+        return;
     pin_buf tmp;
     pin_buf_init(&tmp);
     va_list ap;
@@ -119,8 +141,10 @@ void pin_log_kv_msgf(pin_log_rec *r, const char *fmt, ...) {
     pin_buf_free(&tmp);
 }
 
-void pin_log_end(pin_log_rec *r) {
-    if (!r) return;
+void pin_log_end(pin_log_rec *r)
+{
+    if (!r)
+        return;
     pin_buf_putc(&r->buf, '}');
     pin_buf_putc(&r->buf, '\n');
     pthread_mutex_lock(&g_log_mu);
@@ -131,9 +155,11 @@ void pin_log_end(pin_log_rec *r) {
     free(r);
 }
 
-void pin_log_simple(pin_log_level lvl, const char *event, const char *fmt, ...) {
+void pin_log_simple(pin_log_level lvl, const char *event, const char *fmt, ...)
+{
     pin_log_rec *r = pin_log_begin(lvl, event);
-    if (!r) return;
+    if (!r)
+        return;
     if (fmt) {
         pin_buf tmp;
         pin_buf_init(&tmp);

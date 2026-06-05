@@ -10,6 +10,7 @@ extern int run_event_log_tests(void);
 extern int run_http_tests(void);
 extern int run_workspace_tests(void);
 extern int run_agent_tests(void);
+extern int run_tracestream_tests(void);
 
 typedef int (*suite_fn)(void);
 
@@ -26,6 +27,7 @@ int main(int argc, char **argv) {
         {"http",      run_http_tests},
         {"workspace", run_workspace_tests},
         {"agent",     run_agent_tests},
+        {"tracestream", run_tracestream_tests},
     };
     size_t n = sizeof(suites) / sizeof(suites[0]);
     int failed = 0;

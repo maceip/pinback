@@ -1,37 +1,35 @@
 # pinback
 
 ```text
-browser or native webview shell
+browser, phone, or native shell
         |
+        |  local http, tailscale, caddy, wireguard
         v
 build/pinback-server
-  c99 http server, embedded web ui, sse/ws event stream
+  c99 supervisor + embedded workspace ui + sse/ws stream
         |
         +--> ~/.pinback
         |     workspaces.json
-        |     workspaces/<id>/meta.json
         |     workspaces/<id>/events.log
         |     workspaces/<id>/snapshot.git
         |
-        +--> one ds4-agent child
-              stdin: prompts
-              stdout: prose + rendered tool activity
-              stderr: waiting marker as turn boundary
+        +--> ds4-agent process
+              stdin/stdout/stderr pipes
+              transcript replay + turn diffs
 ```
 
-pinback is a local-first cockpit for `ds4-agent`.
+pinback gives `ds4-agent` a remote-accessible workspace ui for multiple projects.
 
-the useful shape is simple: pick a directory, run one agent there, keep the transcript and workspace state, switch to another directory without pretending there are infinite agents or a hosted backend. the server is a single c binary with the web ui embedded into it. tls, auth, and public exposure live in front of it, usually caddy, tailscale, or wireguard.
+pick a directory, run one agent there, persist the transcript and workspace state, then switch to another project without pretending there are infinite agents or a hosted backend. the server is a single c binary with the web ui embedded into it. tls, auth, and public access live in front of it, usually caddy, tailscale, or wireguard.
 
-## current shape
+## current implementation
 
-- `build/pinback-server` owns the workspace catalog, event logs, active agent process, and local http api.
-- the web ui in `ui/app/` is embedded into `build/generated/static_assets.c`; use `make embed` after changing the ui.
-- the default agent transport is clean `--non-interactive` pipes plus transcript re-prefill on workspace return.
-- `--kv-resume` is the experimental exact resume path: tui-over-pipes for `/save` and `/switch`, with prose/tool data taken from `--trace`.
-- each turn snapshots the workspace through a private shadow git dir and emits a revertable `turn_diff`.
-- desktop shells in `platform/` are thin native webview launchers. mobile shells point at a remote pinback url.
-- `runtime/` holds the separate ds4 runtime cockpit/prototype path (supervisor, web pty, vite ui).
+- `build/pinback-server` is the c supervisor: workspace db, event log, agent lifecycle, embedded ui, health checks, and local http api.
+- `ui/app/` compiles into `build/generated/static_assets.c`; run `make embed` after ui edits.
+- agent i/o defaults to `--non-interactive` stdio with transcript replay when returning to a workspace.
+- `--kv-resume` is experimental: it drives tui `/save` and `/switch` over pipes and reads prose/tool events from `--trace`.
+- each turn writes a private shadow-git snapshot and a reversible `turn_diff`.
+- `platform/` contains thin webview shells: desktop shells can self-host `pinback-server`; mobile shells connect to a remote url.
 
 ## build
 
@@ -100,7 +98,7 @@ get    /metrics
 ```text
 src/              c server, supervisor, event log, workspace store
 build/            pinback-server, fake-ds4-agent, generated static_assets.c
-ui/app/           shipped cockpit ui
+ui/app/           shipped workspace ui
 ui/shiki-bundle/  shiki/oniguruma rebuild toolchain
 tests/            c unit and integration tests
 scripts/          embed + qa smoke harnesses

@@ -111,10 +111,10 @@ experiments/      transport probes (not shipped)
 
 see [docs/REPO_LAYOUT.md](docs/REPO_LAYOUT.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## the edge that matters
+## agent transport
 
-do not call this tiny glue. pinback owns transport, streaming, session continuity, reconnect behavior, event replay, process lifecycle, workspace state, and public ingress boundaries. that is the hard part.
+pinback talks to `ds4-agent` through stdin, stdout, and stderr. stdout becomes the user-visible transcript; stderr carries the idle marker that tells pinback when a turn has finished.
 
-the default path is intentionally boring because it is the one that stays clean: non-interactive ds4 over pipes, with the previous transcript invisibly re-prefilled after a workspace switch. exact kv resume is behind `--kv-resume`; it is more interesting and more fragile, because it has to drive the tui command loop and parse trace output correctly.
+the default mode uses `--non-interactive` and restores context by replaying the prior transcript when a workspace is reactivated. `--kv-resume` is available for exact ds4 session restore through `/save` and `/switch`, with prose and tool events read from `--trace`.
 
-read `docs/architecture/transport-findings.md` before changing the agent transport. that file is the current source of truth.
+transport details live in [docs/architecture/transport-findings.md](docs/architecture/transport-findings.md).

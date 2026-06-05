@@ -118,3 +118,7 @@ pinback talks to `ds4-agent` through stdin, stdout, and stderr. stdout becomes t
 the default mode uses `--non-interactive` and restores context by replaying the prior transcript when a workspace is reactivated. `--kv-resume` is available for exact ds4 session restore through `/save` and `/switch`, with prose and tool events read from `--trace`.
 
 transport details live in [docs/architecture/transport-findings.md](docs/architecture/transport-findings.md).
+
+## plarforms 
+web first, with native chrome for windows, linux, macos, ios, android
+<img width="1225" height="518" alt="win" src="https://github.com/user-attachments/assets/574ffcea-23df-4b4e-b91a-3b19bbb72dc5" />

@@ -149,6 +149,8 @@ jobs:
       - name: Install GitHub CLI attestation support
         run: gh version
       - name: Verify SLSA provenance
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           shopt -s nullglob
           for f in dist/*.tar.gz; do

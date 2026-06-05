@@ -21,7 +21,11 @@
  *
  * Generation increments on:
  *   - log open (so old cursors after a restart get cursor_reset)
- *   - explicit pin_event_log_bump_generation (clear, upstream restart) */
+ *   - explicit pin_event_log_bump_generation (clear, upstream restart)
+ *
+ * Threading: pthread_rwlock_t rw protects the ring and subscriber list.
+ * Each subscriber also has fd_mu for writes to its socket. Append holds
+ * wrlock only for ring + disk; SSE/WS fan-out runs after unlock. */
 
 #include <pthread.h>
 #include <stdbool.h>

@@ -27,6 +27,7 @@
 //     use, so the web bridge is shared verbatim.
 #include <adwaita.h>
 #include <webkit/webkit.h>
+#include "pinback_url.h"
 
 #include <signal.h>
 #include <string.h>
@@ -43,23 +44,8 @@ static pid_t g_server_pid = -1;
 static GtkListBox *g_sidebar = NULL;   // native workspace switcher
 static WebKitWebView *g_web = NULL;
 static AdwWindowTitle *g_title = NULL; // content header title/subtitle
-
-// Try one HTTP GET /healthz; return 1 iff the server answers "HTTP/.. 200".
-static int health_ok(void) {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return 0;
-    struct sockaddr_in sa = {0};
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(PB_PORT);
-    inet_pton(AF_INET, PB_HOST, &sa.sin_addr);
-    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) { close(fd); return 0; }
-    const char *req = "GET /healthz HTTP/1.0\r\nHost: " PB_HOST "\r\n\r\n";
-    if (write(fd, req, strlen(req)) < 0) { close(fd); return 0; }
-    char buf[64] = {0};
-    ssize_t n = read(fd, buf, sizeof(buf) - 1);
-    close(fd);
-    return n > 12 && memcmp(buf, "HTTP/", 5) == 0 && strstr(buf, " 200") != NULL;
-}
+static char g_cockpit_url[PINBACK_URL_MAX];
+static gboolean g_in_setup = FALSE;
 
 // fork+exec pinback-server on the loopback port. PATH-resolved (execvp), with
 // a PINBACK_SERVER_BIN override for a bundled/relocated binary.
@@ -75,7 +61,9 @@ static void spawn_server(void) {
     }
     if (pid > 0) {
         g_server_pid = pid;
-        for (int i = 0; i < 150 && !health_ok(); i++)   // up to ~30s
+        char url[PINBACK_URL_MAX];
+        pinback_url_resolve(url, sizeof url, "http://" PB_HOST ":8088");
+        for (int i = 0; i < 150 && !pinback_health_ok(url); i++)   // up to ~30s
             g_usleep(200 * 1000);
     }
 }
@@ -122,10 +110,118 @@ static void clear_listbox(GtkListBox *lb) {
         gtk_list_box_remove(lb, child);
 }
 
-// web -> native: the cockpit posts {type, activeId, canGoBack, workspaces:[...]}.
+static void load_cockpit(const char *url) {
+    if (!g_web || !url || !*url) return;
+    g_strlcpy(g_cockpit_url, url, sizeof g_cockpit_url);
+    g_in_setup = FALSE;
+    webkit_web_view_load_uri(g_web, url);
+}
+
+static void load_setup_prefill(const char *prefill) {
+    char setup_uri[PINBACK_URL_MAX + 16];
+    if (pinback_setup_file_uri(setup_uri, sizeof setup_uri) != 0) {
+        g_printerr("pinback-shell: setup.html not found\n");
+        return;
+    }
+    g_in_setup = TRUE;
+    webkit_web_view_load_uri(g_web, setup_uri);
+    if (prefill && *prefill) {
+        GString *esc = g_string_new(NULL);
+        for (const char *c = prefill; *c; c++) {
+            if (*c == '\\' || *c == '\'') g_string_append_c(esc, '\\');
+            g_string_append_c(esc, *c);
+        }
+        char *js = g_strdup_printf(
+            "document.getElementById('url').value='%s';", esc->str);
+        webkit_web_view_evaluate_javascript(g_web, js, -1, NULL, NULL, NULL, NULL, NULL);
+        g_free(js);
+        g_string_free(esc, TRUE);
+    }
+}
+
+static void on_setup_message(JSCValue *value) {
+    if (!value || !jsc_value_is_object(value) || !g_web) return;
+    char *type = jsc_str_prop(value, "type");
+    if (!type || strcmp(type, "pinback-setup") != 0) {
+        g_free(type);
+        return;
+    }
+    char *action = jsc_str_prop(value, "action");
+    char *url = jsc_str_prop(value, "url");
+    g_free(type);
+    if (!url || !*url) {
+        g_free(action);
+        g_free(url);
+        return;
+    }
+    if (strcmp(action, "test") == 0) {
+        if (pinback_health_ok(url))
+            webkit_web_view_evaluate_javascript(
+                g_web,
+                "document.getElementById('status').textContent='Server is reachable.';"
+                "document.getElementById('status').className='ok';",
+                -1, NULL, NULL, NULL, NULL, NULL);
+        else
+            webkit_web_view_evaluate_javascript(
+                g_web,
+                "document.getElementById('status').textContent='Cannot reach server at that URL.';"
+                "document.getElementById('status').className='err';",
+                -1, NULL, NULL, NULL, NULL, NULL);
+        g_free(action);
+        g_free(url);
+        return;
+    }
+    if (strcmp(action, "connect") == 0) {
+        pinback_url_save(url);
+        if (pinback_health_ok(url))
+            load_cockpit(url);
+        else
+            webkit_web_view_evaluate_javascript(
+                g_web,
+                "document.getElementById('status').textContent='Saved, but server still unreachable.';"
+                "document.getElementById('status').className='err';",
+                -1, NULL, NULL, NULL, NULL, NULL);
+    }
+    g_free(action);
+    g_free(url);
+}
+
+static void begin_session(void) {
+    char url[PINBACK_URL_MAX];
+    const char *env = g_getenv("PINBACK_URL");
+
+    if (env && *env) {
+        load_cockpit(env);
+        return;
+    }
+    pinback_url_resolve(url, sizeof url, "http://" PB_HOST ":8088");
+    if (pinback_health_ok(url)) {
+        load_cockpit(url);
+        return;
+    }
+    spawn_server();
+    pinback_url_resolve(url, sizeof url, "http://" PB_HOST ":8088");
+    if (pinback_health_ok(url)) {
+        load_cockpit(url);
+        return;
+    }
+    load_setup_prefill(url);
+}
+
+// web -> native: cockpit workspaces or setup panel.
 static void on_script_message(WebKitUserContentManager *ucm, JSCValue *value, gpointer data) {
     (void)ucm; (void)data;
-    if (!g_sidebar || !value || !jsc_value_is_object(value)) return;
+    if (!value || !jsc_value_is_object(value)) return;
+
+    char *type = jsc_str_prop(value, "type");
+    if (type && strcmp(type, "pinback-setup") == 0) {
+        on_setup_message(value);
+        g_free(type);
+        return;
+    }
+    g_free(type);
+
+    if (!g_sidebar || g_in_setup) return;
 
     char *active = jsc_str_prop(value, "activeId");
 
@@ -203,6 +299,11 @@ static void on_reload(GtkButton *btn, gpointer web) {
     webkit_web_view_reload(WEBKIT_WEB_VIEW(web));
 }
 
+static void on_server_settings(GtkButton *btn, gpointer web) {
+    (void)btn; (void)web;
+    load_setup_prefill(g_cockpit_url[0] ? g_cockpit_url : "http://" PB_HOST ":8088");
+}
+
 static void on_activate(GtkApplication *app, gpointer user_data) {
     (void)user_data;
 
@@ -216,7 +317,10 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     WebKitUserContentManager *ucm =
         webkit_web_view_get_user_content_manager(g_web);
     webkit_user_content_manager_register_script_message_handler(ucm, "pinback", NULL);
+    webkit_user_content_manager_register_script_message_handler(ucm, "pinbackSetup", NULL);
     g_signal_connect(ucm, "script-message-received::pinback",
+                     G_CALLBACK(on_script_message), NULL);
+    g_signal_connect(ucm, "script-message-received::pinbackSetup",
                      G_CALLBACK(on_script_message), NULL);
 
     // Sidebar: a source-list of workspaces inside its own toolbar view.
@@ -256,6 +360,11 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
     g_signal_connect(reload, "clicked", G_CALLBACK(on_reload), web);
     adw_header_bar_pack_end(ADW_HEADER_BAR(hb), reload);
 
+    GtkWidget *server = gtk_button_new_from_icon_name("network-server-symbolic");
+    gtk_widget_set_tooltip_text(server, "Server settings");
+    g_signal_connect(server, "clicked", G_CALLBACK(on_server_settings), web);
+    adw_header_bar_pack_end(ADW_HEADER_BAR(hb), server);
+
     adw_toolbar_view_add_top_bar(ADW_TOOLBAR_VIEW(content_tv), hb);
     adw_toolbar_view_set_content(ADW_TOOLBAR_VIEW(content_tv), web);
 
@@ -279,12 +388,7 @@ static void on_activate(GtkApplication *app, gpointer user_data) {
                      G_CALLBACK(on_dark_changed), NULL);
     apply_scheme();
 
-    const char *url = g_getenv("PINBACK_URL");
-    if (!url || !*url) {
-        spawn_server();             // self-host the cockpit on loopback
-        url = "http://" PB_HOST ":8088";
-    }
-    webkit_web_view_load_uri(g_web, url);
+    begin_session();
 
     gtk_window_present(GTK_WINDOW(window));
 }

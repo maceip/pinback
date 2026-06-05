@@ -3,7 +3,14 @@
 
 /* Per-connection request handler. Routes one HTTP request from a fresh
  * client fd to the right endpoint and closes the fd. Called on a
- * blocking thread spawned by main. */
+ * detached pthread per accept() in pinback-server (see pinback.c).
+ *
+ * Concurrency:
+ *   - pin_workspace_store_* APIs take the store rwlock internally.
+ *   - pin_event_log_* APIs take each log's rwlock internally.
+ *   - pin_agent_activate/submit/reset/abort are serialized via api_mu.
+ *   - GET /api/w/<id>/events blocks this thread for the SSE session;
+ *     other endpoints are short-lived. See docs/CONCURRENCY.md. */
 
 #include "agent.h"
 #include "workspace.h"

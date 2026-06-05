@@ -27,7 +27,7 @@ pick a directory, run one agent there, persist the transcript and workspace stat
 - `build/pinback-server` is the c supervisor: workspace db, event log, agent lifecycle, embedded ui, health checks, and local http api.
 - `ui/app/` compiles into `build/generated/static_assets.c`; run `make embed` after ui edits.
 - agent i/o defaults to `--non-interactive` stdio with transcript replay when returning to a workspace.
-- `--kv-resume` is experimental: it drives tui `/save` and `/switch` over pipes and reads prose/tool events from `--trace`.
+- KV workspace resume is **on by default**: TUI transport over pipes (`LINENOISE_ASSUME_TTY`), `/save` + `/switch`, prose from `--trace`. Pass `--no-kv-resume` for transcript re-prefill only.
 - each turn writes a private shadow-git snapshot and a reversible `turn_diff`.
 - `platform/` contains thin webview shells: desktop shells can self-host `pinback-server`; mobile shells connect to a remote url.
 
@@ -115,7 +115,7 @@ see [docs/REPO_LAYOUT.md](docs/REPO_LAYOUT.md) and [CONTRIBUTING.md](CONTRIBUTIN
 
 pinback talks to `ds4-agent` through stdin, stdout, and stderr. stdout becomes the user-visible transcript; stderr carries the idle marker that tells pinback when a turn has finished.
 
-the default mode uses `--non-interactive` and restores context by replaying the prior transcript when a workspace is reactivated. `--kv-resume` is available for exact ds4 session restore through `/save` and `/switch`, with prose and tool events read from `--trace`.
+by default pinback uses exact KV session restore (`/save` on switch-away, `/switch` on return). Use `--no-kv-resume` to fall back to transcript re-prefill (`--non-interactive` transport).
 
 transport details live in [docs/architecture/transport-findings.md](docs/architecture/transport-findings.md).
 

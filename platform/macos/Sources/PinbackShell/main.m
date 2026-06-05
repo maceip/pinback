@@ -29,6 +29,7 @@
 //     the window both follow the system appearance).
 #import <Cocoa/Cocoa.h>
 #import <WebKit/WebKit.h>
+#include "pinback_url.h"
 
 #include <crt_externs.h>
 #include <arpa/inet.h>
@@ -41,31 +42,8 @@
 #include <unistd.h>
 
 static pid_t g_server_pid = -1;
-
-// ---------------------------------------------------------------------------
-// pinback-server lifecycle (unchanged).
-// ---------------------------------------------------------------------------
-static int health_ok(void) {
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return 0;
-    struct sockaddr_in sa = {0};
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(8088);
-    inet_pton(AF_INET, "127.0.0.1", &sa.sin_addr);
-    if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
-        close(fd);
-        return 0;
-    }
-    const char *req = "GET /healthz HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n";
-    if (write(fd, req, strlen(req)) < 0) {
-        close(fd);
-        return 0;
-    }
-    char buf[64] = {0};
-    ssize_t n = read(fd, buf, sizeof(buf) - 1);
-    close(fd);
-    return n > 12 && memcmp(buf, "HTTP/", 5) == 0 && strstr(buf, " 200") != NULL;
-}
+static BOOL g_in_setup = NO;
+static char g_cockpit_url[PINBACK_URL_MAX];
 
 static void stop_server(void) {
     if (g_server_pid > 0) {
@@ -112,15 +90,58 @@ static NSString *spawn_server(void) {
         return @"http://127.0.0.1:8088";
     }
     g_server_pid = pid;
-    for (int i = 0; i < 150 && !health_ok(); i++)
+    char url[PINBACK_URL_MAX];
+    pinback_url_resolve(url, sizeof url, pinback_url_default());
+    for (int i = 0; i < 150 && !pinback_health_ok(url); i++)
         usleep(200 * 1000);
-    return @"http://127.0.0.1:8088";
+    return [NSString stringWithUTF8String:url];
 }
 
-static NSString *start_url(void) {
+static NSString *pinback_js_escape(NSString *s) {
+    s = [s stringByReplacingOccurrencesOfString:@"\\" withString:@"\\\\"];
+    return [s stringByReplacingOccurrencesOfString:@"'" withString:@"\\'"];
+}
+
+static void load_cockpit(WKWebView *web, NSString *url) {
+    g_in_setup = NO;
+    strncpy(g_cockpit_url, url.UTF8String, sizeof g_cockpit_url - 1);
+    [web loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:url]]];
+}
+
+static void begin_session(WKWebView *web) {
     const char *env = getenv("PINBACK_URL");
-    if (env && *env) return [NSString stringWithUTF8String:env];
-    return spawn_server();
+    if (env && *env) {
+        load_cockpit(web, [NSString stringWithUTF8String:env]);
+        return;
+    }
+    char url[PINBACK_URL_MAX];
+    pinback_url_resolve(url, sizeof url, pinback_url_default());
+    NSString *nsurl = [NSString stringWithUTF8String:url];
+    if (pinback_health_ok(url)) {
+        load_cockpit(web, nsurl);
+        return;
+    }
+    (void)spawn_server();
+    pinback_url_resolve(url, sizeof url, pinback_url_default());
+    nsurl = [NSString stringWithUTF8String:url];
+    if (pinback_health_ok(url)) {
+        load_cockpit(web, nsurl);
+        return;
+    }
+    char setup_uri[PINBACK_URL_MAX + 16];
+    if (pinback_setup_file_uri(setup_uri, sizeof setup_uri) == 0) {
+        g_in_setup = YES;
+        NSURL *u = [NSURL URLWithString:[NSString stringWithUTF8String:setup_uri]];
+        [web loadRequest:[NSURLRequest requestWithURL:u]];
+        if (nsurl.length) {
+            NSString *js = [NSString stringWithFormat:
+                @"document.getElementById('url').value='%@';",
+                pinback_js_escape(nsurl)];
+            [web evaluateJavaScript:js completionHandler:nil];
+        }
+    } else {
+        load_cockpit(web, nsurl);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +151,7 @@ static NSString *const kReloadItem = @"pinback.reload";
 static NSString *const kNewWorkspaceItem = @"pinback.newWorkspace";
 static NSString *const kShareItem = @"pinback.share";
 static NSString *const kInspectorItem = @"pinback.inspector";
+static NSString *const kServerItem = @"pinback.server";
 
 // ===========================================================================
 // Sidebar: native workspace switcher, fed by the JS bridge.
@@ -393,6 +415,21 @@ static NSString *const kInspectorItem = @"pinback.inspector";
         self.inspectorItem.animator.collapsed = !self.inspectorItem.collapsed;
 }
 
+- (void)openServerSettings:(id)sender {
+    (void)sender;
+    char setup_uri[PINBACK_URL_MAX + 16];
+    if (pinback_setup_file_uri(setup_uri, sizeof setup_uri) != 0) return;
+    g_in_setup = YES;
+    NSURL *u = [NSURL URLWithString:[NSString stringWithUTF8String:setup_uri]];
+    [self.web loadRequest:[NSURLRequest requestWithURL:u]];
+    if (g_cockpit_url[0]) {
+        NSString *prefill = [NSString stringWithUTF8String:g_cockpit_url];
+        NSString *js = [NSString stringWithFormat:
+            @"document.getElementById('url').value='%@';", pinback_js_escape(prefill)];
+        [self.web evaluateJavaScript:js completionHandler:nil];
+    }
+}
+
 @end
 
 // ===========================================================================
@@ -408,7 +445,8 @@ static NSString *const kInspectorItem = @"pinback.inspector";
 
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
     WKWebViewConfiguration *cfg = [[WKWebViewConfiguration alloc] init];
-    [cfg.userContentController addScriptMessageHandler:self name:@"pinback"];  // web -> native
+    [cfg.userContentController addScriptMessageHandler:self name:@"pinback"];
+    [cfg.userContentController addScriptMessageHandler:self name:@"pinbackSetup"];
     self.web = [[WKWebView alloc] initWithFrame:NSMakeRect(0, 0, 1280, 800)
                                   configuration:cfg];
 
@@ -433,8 +471,7 @@ static NSString *const kInspectorItem = @"pinback.inspector";
 
     self.window = win;
 
-    NSString *url = start_url();
-    [self.web loadRequest:[NSURLRequest requestWithURL:[NSURL URLWithString:url]]];
+    begin_session(self.web);
 
     [win center];
     [win makeKeyAndOrderFront:nil];
@@ -449,7 +486,39 @@ static NSString *const kInspectorItem = @"pinback.inspector";
       didReceiveScriptMessage:(WKScriptMessage *)message {
     if (![message.body isKindOfClass:[NSDictionary class]]) return;
     NSDictionary *body = message.body;
-    if (![body[@"type"] isEqual:@"workspaces"]) return;
+
+    if ([message.name isEqualToString:@"pinbackSetup"] ||
+        [body[@"type"] isEqualToString:@"pinback-setup"]) {
+        NSString *action = body[@"action"];
+        NSString *url = body[@"url"];
+        if (![url isKindOfClass:[NSString class]] || !url.length) return;
+        if ([action isEqualToString:@"test"]) {
+            if (pinback_health_ok(url.UTF8String))
+                [self.web evaluateJavaScript:
+                    @"document.getElementById('status').textContent='Server is reachable.';"
+                    @"document.getElementById('status').className='ok';"
+                    completionHandler:nil];
+            else
+                [self.web evaluateJavaScript:
+                    @"document.getElementById('status').textContent='Cannot reach server at that URL.';"
+                    @"document.getElementById('status').className='err';"
+                    completionHandler:nil];
+            return;
+        }
+        if ([action isEqualToString:@"connect"]) {
+            pinback_url_save(url.UTF8String);
+            if (pinback_health_ok(url.UTF8String))
+                load_cockpit(self.web, url);
+            else
+                [self.web evaluateJavaScript:
+                    @"document.getElementById('status').textContent='Saved, but server still unreachable.';"
+                    @"document.getElementById('status').className='err';"
+                    completionHandler:nil];
+        }
+        return;
+    }
+
+    if (g_in_setup || ![body[@"type"] isEqual:@"workspaces"]) return;
 
     NSArray *list = body[@"workspaces"];
     NSString *activeId = body[@"activeId"];
@@ -483,6 +552,7 @@ static NSString *const kInspectorItem = @"pinback.inspector";
         NSToolbarFlexibleSpaceItemIdentifier,   // == ToolbarSpacer(.flexible)
         kShareItem,
         NSToolbarSpaceItemIdentifier,           // == ToolbarSpacer(.fixed)
+        kServerItem,
         kInspectorItem,
     ];
 }
@@ -508,6 +578,10 @@ static NSString *const kInspectorItem = @"pinback.inspector";
         item.label = @"Share";
         item.image = [NSImage imageWithSystemSymbolName:@"square.and.arrow.up" accessibilityDescription:@"Share"];
         item.action = @selector(share:);
+    } else if ([id isEqualToString:kServerItem]) {
+        item.label = @"Server";
+        item.image = [NSImage imageWithSystemSymbolName:@"network" accessibilityDescription:@"Server"];
+        item.action = @selector(openServerSettings:);
     } else if ([id isEqualToString:kInspectorItem]) {
         item.label = @"Info";
         item.image = [NSImage imageWithSystemSymbolName:@"info.circle" accessibilityDescription:@"Info"];

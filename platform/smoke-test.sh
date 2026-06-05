@@ -14,7 +14,7 @@
 #   all       every target above
 #
 # Environment:
-#   WINDOWS_HOST              SSH target (default: mac@192.168.0.180)
+#   WINDOWS_HOST              SSH target (required for windows target; no default)
 #   WINDOWS_PINBACK_ROOT        Repo path on Windows (default: C:/Users/mac/pinback)
 #   ORB_MACHINE                 Orb Linux VM (default: webkitium-ci)
 #   MAC_LAN_IP                  LAN IP for Windows→Mac (auto: en0)
@@ -31,7 +31,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLATFORM="$(cd "$(dirname "$0")" && pwd)"
 
-WINDOWS_HOST="${WINDOWS_HOST:-mac@192.168.0.180}"
+WINDOWS_HOST="${WINDOWS_HOST:-}"
 WINDOWS_PINBACK_ROOT="${WINDOWS_PINBACK_ROOT:-C:/Users/mac/pinback}"
 ORB_MACHINE="${ORB_MACHINE:-webkitium-ci}"
 MAC_LAN_IP="${MAC_LAN_IP:-$(ipconfig getifaddr en0 2>/dev/null || true)}"
@@ -291,6 +291,10 @@ test_linux() {
 }
 
 test_windows() {
+    if [ -z "$WINDOWS_HOST" ]; then
+        fail "windows: set WINDOWS_HOST (e.g. user@host) for SSH smoke tests"
+        return 1
+    fi
     section "windows (SSH: $WINDOWS_HOST)"
     ssh_windows "cd /d C:\\Users\\mac\\pinback && git pull --ff-only 2>nul" >/dev/null || true
     if [ -z "$MAC_LAN_IP" ]; then fail "MAC_LAN_IP not set (could not detect en0)"; return 1; fi

@@ -62,6 +62,10 @@ FAKE_BIN  := $(BINDIR)/fake-ds4-agent
 FAKE_SRC  := $(SUPPORT)/fake-ds4-agent.c
 FAKE_OBJ  := $(OBJ_DIR)/fake-ds4-agent.o
 
+FAKE_KV_BIN  := $(BINDIR)/fake-kv-ds4-agent
+FAKE_KV_SRC  := $(SUPPORT)/fake-kv-ds4-agent.c
+FAKE_KV_OBJ  := $(OBJ_DIR)/fake-kv-ds4-agent.o
+
 TEST_SRCS := \
 	$(TEST_DIR)/test_util.c \
 	$(TEST_DIR)/test_event_log.c \
@@ -78,10 +82,11 @@ TEST_BIN  := $(BUILD_DIR)/run_tests
 # Avoid parallel link races on fresh build/ trees (common on CI -j).
 .NOTPARALLEL: all test
 
-all: $(MAIN_BIN) $(FAKE_BIN)
+all: $(MAIN_BIN) $(FAKE_BIN) $(FAKE_KV_BIN)
 
 pinback-server: $(MAIN_BIN)
 fake-ds4-agent: $(FAKE_BIN)
+fake-kv-ds4-agent: $(FAKE_KV_BIN)
 
 # Regenerate embedded UI from ui/app/. Output lives under build/generated/.
 embed:
@@ -117,6 +122,9 @@ $(MAIN_BIN): $(CORE_OBJS) $(GEN_STATIC_OBJ) $(MAIN_OBJ) | $(BINDIR)
 $(FAKE_BIN): $(FAKE_OBJ) $(OBJ_DIR)/util.o | $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
 
+$(FAKE_KV_BIN): $(FAKE_KV_OBJ) $(OBJ_DIR)/util.o | $(BINDIR)
+	$(CC) $(CFLAGS) -o $@ $^ $(LDLIBS)
+
 $(TEST_BIN): $(TEST_OBJS) $(CORE_OBJS) $(GEN_STATIC_OBJ) | $(BINDIR)
 	$(CC) $(CFLAGS) -o $@ $(TEST_OBJS) $(CORE_OBJS) $(GEN_STATIC_OBJ) $(LDLIBS)
 
@@ -132,18 +140,30 @@ $(OBJ_DIR)/test_%.o: $(TEST_DIR)/test_%.c | $(OBJ_DIR)
 $(OBJ_DIR)/fake-ds4-agent.o: $(FAKE_SRC) | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
+$(OBJ_DIR)/fake-kv-ds4-agent.o: $(FAKE_KV_SRC) | $(OBJ_DIR)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 $(GEN_STATIC_OBJ): $(GEN_STATIC) src/static_assets.h | $(OBJ_DIR)
 	$(CC) $(CFLAGS) -c -o $@ $(GEN_STATIC)
 
 $(OBJ_DIR):
 	@mkdir -p $(OBJ_DIR)
 
-test: $(TEST_BIN) $(FAKE_BIN)
+test: $(TEST_BIN) $(FAKE_BIN) $(FAKE_KV_BIN)
 	$(TEST_BIN)
 
 smoke:
 	@if [ -z "$(URL)" ]; then echo "usage: make smoke URL=http://127.0.0.1:8088"; exit 2; fi
 	scripts/qa/pinback-smoke "$(URL)"
+
+kv-smoke:
+	@if [ -z "$(URL)" ] && [ -z "$(DS4_MODEL)" ]; then \
+		echo "usage: make kv-smoke URL=http://127.0.0.1:18098"; \
+		echo "   or: make kv-smoke DS4_MODEL=/path/to/model.gguf  (starts server)"; \
+		exit 2; \
+	fi
+	@if [ -n "$(DS4_MODEL)" ]; then scripts/qa/kv-resume-smoke --start-server --model "$(DS4_MODEL)"; \
+	else scripts/qa/kv-resume-smoke "$(URL)"; fi
 
 clean:
 	rm -rf $(BUILD_DIR)

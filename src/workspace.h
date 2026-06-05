@@ -21,9 +21,12 @@
  *         events.log               per-workspace pin_event_log file
  *     _trash/<id>/                 archived events.log on DELETE
  *
- * Concurrency: the store is guarded by an internal rwlock. Open event
- * logs are kept hot in a small map (one per workspace) so SSE clients
- * can attach without spinning on disk. */
+ * Concurrency: the store is guarded by pthread_rwlock_t rw (writer-pref).
+ * Catalog mutations (create/delete/reset/set_active/session_sha) take
+ * wrlock. Reads (list/get/get_active) take rdlock. pin_workspace_store_event_log
+ * uses rdlock then, if needed, wrlock to lazy-open events.log — callers
+ * must not hold the store lock while blocking on I/O. Returned event_log
+ * pointers remain valid until pin_workspace_store_close. */
 
 #include "event_log.h"
 #include "util.h"

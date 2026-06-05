@@ -1,0 +1,325 @@
+#!/usr/bin/env bash
+# kv-resume-smoke: end-to-end KV /save + /switch against a REAL ds4-agent.
+#
+# Usage:
+#   kv-resume-smoke [URL]
+#   kv-resume-smoke --start-server
+#
+# With --start-server we poll $ROOT/workspaces/<id>/events.log (reliable).
+# Exits 0 on success.
+
+set -uo pipefail
+
+START_SERVER=0
+URL="${PINBACK_URL:-http://127.0.0.1:18098}"
+MODEL="${DS4_MODEL:-}"
+AGENT_BIN="${DS4_AGENT_BIN:-ds4-agent}"
+PINBACK_BIN="${PINBACK_AGENT_BIN:-build/pinback-server}"
+READY_TIMEOUT="${READY_TIMEOUT:-120}"
+TURN_TIMEOUT="${TURN_TIMEOUT:-180}"
+SAVE_TIMEOUT_MS="${SAVE_TIMEOUT_MS:-120000}"
+# activate includes /save wait (up to SAVE_TIMEOUT_MS) + kill + respawn
+ACTIVATE_TIMEOUT="${ACTIVATE_TIMEOUT:-$(( SAVE_TIMEOUT_MS / 1000 + 90 ))}"
+CODEWORD="ZEBRA"
+POLL_INTERVAL="${POLL_INTERVAL:-1}"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --start-server) START_SERVER=1; shift ;;
+        --url) URL="$2"; shift 2 ;;
+        --model) MODEL="$2"; shift 2 ;;
+        --agent-bin) AGENT_BIN="$2"; shift 2 ;;
+        -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+        *) URL="$1"; shift ;;
+    esac
+done
+
+BOLD=$'\033[1m'; RED=$'\033[31m'; GREEN=$'\033[32m'; YELLOW=$'\033[33m'; OFF=$'\033[0m'
+fails=0
+say() { printf '%s%s%s\n' "$BOLD" "$*" "$OFF"; }
+ok()  { printf '%sok%s   %s\n'  "$GREEN" "$OFF" "$*"; }
+nok() { printf '%sFAIL%s %s\n'  "$RED"   "$OFF" "$*"; fails=$((fails+1)); }
+warn(){ printf '%s%s%s\n'        "$YELLOW" "$*" "$OFF"; }
+
+command -v jq >/dev/null || { echo "jq required"; exit 2; }
+command -v python3 >/dev/null || { echo "python3 required"; exit 2; }
+
+SERVER_PID=""
+ROOT=""
+FAKE_HOME=""
+KVCACHE=""
+cleanup() {
+    [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null && wait "$SERVER_PID" 2>/dev/null || true
+    [ -n "$ROOT" ] && rm -rf "$ROOT"
+    [ "${KVCACHE_KEEP:-}" != "1" ] && [ -n "$FAKE_HOME" ] && rm -rf "$FAKE_HOME"
+}
+trap cleanup EXIT
+
+if [ "$START_SERVER" -eq 1 ]; then
+    [ -n "$MODEL" ] && [ -f "$MODEL" ] || { echo "DS4_MODEL required" >&2; exit 2; }
+    [ -x "$PINBACK_BIN" ] || { echo "run: make pinback-server" >&2; exit 2; }
+    ROOT=$(mktemp -d /tmp/pb-kv-smoke-root.XXXXXX)
+    FAKE_HOME=$(mktemp -d /tmp/pb-kv-smoke-home.XXXXXX)
+    mkdir -p "$FAKE_HOME/.ds4/kvcache"
+    KVCACHE="$FAKE_HOME/.ds4/kvcache"
+    "$PINBACK_BIN" \
+        --bind "127.0.0.1:18098" --root "$ROOT" \
+        --agent-bin "$AGENT_BIN" --model "$MODEL" \
+        --kvcache-dir "$KVCACHE" --save-timeout-ms "$SAVE_TIMEOUT_MS" \
+        --quiet >/tmp/pb.kv-smoke.server.log 2>&1 &
+    SERVER_PID=$!
+    URL="http://127.0.0.1:18098"
+    say "started pinback-server pid=$SERVER_PID"
+    for _ in $(seq 1 60); do
+        curl -fsS "$URL/healthz" >/dev/null 2>&1 && break
+        sleep 0.5
+    done
+    curl -fsS "$URL/healthz" >/dev/null 2>&1 && ok "server healthy" || { nok "server unhealthy"; exit 1; }
+fi
+
+events_log() { echo "${ROOT}/workspaces/$1/events.log"; }
+
+wait_ready() {
+    local max="${1:-$READY_TIMEOUT}"
+    local t0
+    t0=$(date +%s)
+    while [ "$(($(date +%s) - t0))" -lt "$max" ]; do
+        curl -fsS "$URL/readyz" 2>/dev/null | grep -q '^ready' && return 0
+        sleep 2
+    done
+    return 1
+}
+
+# Poll on-disk events.log (fast + sees trace thinking tokens).
+wait_turn_log() {
+    local id="$1" timeout="$2"
+    local log
+    log=$(events_log "$id")
+    local baseline=0
+    [ -f "$log" ] && baseline=$(wc -l <"$log" | tr -d ' ')
+    local t0
+    t0=$(date +%s)
+    while [ "$(($(date +%s) - t0))" -lt "$timeout" ]; do
+        if [ -f "$log" ]; then
+            local n
+            n=$(wc -l <"$log" | tr -d ' ')
+            if [ "$n" -gt "$baseline" ] && tail -30 "$log" | grep -q '"kind":"answer_end"'; then
+                sleep 4
+                return 0
+            fi
+        fi
+        sleep "$POLL_INTERVAL"
+    done
+    return 1
+}
+
+log_grep_word() {
+    grep -qi "$2" "$(events_log "$1")" 2>/dev/null
+}
+
+# After last user line in events.log, collect answer/thinking text; print FOUND/TEXT.
+analyze_log() {
+    local log="$1" word="$2"
+    python3 - "$log" "$word" <<'PY'
+import json, sys
+logpath, word = sys.argv[1], sys.argv[2].upper()
+last_user = -1
+chunks = []
+try:
+    f = open(logpath, encoding="utf-8", errors="replace")
+except OSError:
+    print("FOUND False")
+    print("TEXT ")
+    sys.exit(0)
+for line in f:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        ev = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    seq = ev.get("seq", 0)
+    k = ev.get("kind")
+    if k == "user":
+        last_user = seq
+        chunks = []
+    elif k in ("answer", "thinking") and seq > last_user:
+        pl = ev.get("payload") or {}
+        if isinstance(pl, dict):
+            chunks.append(pl.get("text", ""))
+text = "".join(chunks)
+print("FOUND", word in text.upper())
+print("TEXT", text[:400].replace("\n", " "))
+PY
+}
+
+wait_turn() {
+    local id="$1" label="$2" timeout="$3"
+    if [ -n "$ROOT" ]; then
+        if wait_turn_log "$id" "$timeout"; then
+            analyze_log "$(events_log "$id")" "$CODEWORD" >"/tmp/pb.kv.${label}.txt" 2>/dev/null || true
+            echo "END True" >>"/tmp/pb.kv.${label}.txt"
+            return 0
+        fi
+        echo "END False" >"/tmp/pb.kv.${label}.txt"
+        return 1
+    fi
+    curl -sS --max-time "$timeout" -H 'Accept: text/event-stream' \
+        "$URL/api/w/$id/events?after=0" 2>/dev/null \
+        | python3 -u -c '
+import sys, json, time
+text, saw_end = [], False
+end_at = None
+deadline = time.monotonic() + '"$timeout"'
+for line in sys.stdin:
+    now = time.monotonic()
+    if now > deadline: break
+    if not line.startswith("data:"): continue
+    p = line[5:].strip()
+    if not p: continue
+    try: ev = json.loads(p)
+    except: continue
+    evs = ev.get("events", [ev]) if isinstance(ev, dict) and "events" in ev else [ev]
+    for e in evs:
+        if not isinstance(e, dict): continue
+        k = e.get("kind")
+        if k in ("answer", "thinking"):
+            pl = e.get("payload") or {}
+            if isinstance(pl, dict): text.append(pl.get("text", ""))
+        elif k == "answer_end":
+            saw_end = True
+            if end_at is None: end_at = now
+    if saw_end and end_at and (now - end_at) > 4: break
+print("END", saw_end)
+print("TEXT", "".join(text)[:400])
+' >"/tmp/pb.kv.${label}.txt" 2>/dev/null
+}
+
+check_turn_end() {
+    local label="$1"
+    grep -q '^END True' "/tmp/pb.kv.${label}.txt" 2>/dev/null
+}
+
+check_log_word() {
+    local id="$1" word="$2" label="$3"
+    if [ -z "$ROOT" ]; then
+        local t
+        t=$(awk '/^TEXT /{sub(/^TEXT /,""); print; exit}' "/tmp/pb.kv.${label}.txt" 2>/dev/null | tr '[:lower:]' '[:upper:]')
+        printf '%s' "$t" | grep -q "$word" && return 0
+        return 1
+    fi
+    analyze_log "$(events_log "$id")" "$word" | grep -q '^FOUND True'
+}
+
+WS_A=$(mktemp -d /tmp/pb-kv-A.XXXXXX)
+WS_B=$(mktemp -d /tmp/pb-kv-B.XXXXXX)
+
+say "[1/4] A codeword turn"
+mk=$(curl -sS -o /tmp/pb.kv.A.json -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X POST -d "$(jq -nc --arg p "$WS_A" '{path:$p,label:"kvA"}')" "$URL/api/w")
+[ "$mk" = "201" ] && idA=$(jq -r .id /tmp/pb.kv.A.json) && ok "A id=$idA" || { nok "create A"; exit 1; }
+
+curl -sS -o /dev/null -w '%{http_code}' -X POST "$URL/api/w/$idA/activate" | grep -q 200 \
+    && ok "activate A" || { nok "activate A"; exit 1; }
+wait_ready "$READY_TIMEOUT" && ok "agent ready" || warn "readyz timeout (continuing)"
+
+promptA="Remember the codeword ${CODEWORD}. Reply with exactly: stored ${CODEWORD}"
+curl -sS -o /tmp/pb.kv.inA.json -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X POST -d "$(jq -nc --arg t "$promptA" '{text:$t}')" "$URL/api/w/$idA/input" | grep -q 202 \
+    && ok "input A" || nok "input A failed"
+
+wait_turn "$idA" "A1" "$TURN_TIMEOUT"
+check_turn_end A1 && ok "A answer_end" || nok "A no answer_end"
+log_grep_word "$idA" "$CODEWORD" && ok "A log contains $CODEWORD" || nok "A missing $CODEWORD in log"
+
+say "[2/4] switch to B + save"
+mk=$(curl -sS -o /tmp/pb.kv.B.json -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X POST -d "$(jq -nc --arg p "$WS_B" '{path:$p,label:"kvB"}')" "$URL/api/w")
+[ "$mk" = "201" ] && idB=$(jq -r .id /tmp/pb.kv.B.json) && ok "B id=$idB" || { nok "create B"; exit 1; }
+
+say "    waiting for A idle before /save"
+wait_ready 30 || true
+sleep 2
+act=$(curl -sS --max-time "$ACTIVATE_TIMEOUT" -o /dev/null -w '%{http_code}' -X POST "$URL/api/w/$idB/activate")
+[ "$act" = "200" ] && ok "activate B" || nok "activate B => $act (curl max ${ACTIVATE_TIMEOUT}s)"
+grep -q 'kv.save_ok' /tmp/pb.kv-smoke.server.log 2>/dev/null && ok "/save succeeded" \
+    || warn "no kv.save_ok in server log (see kv.save_timeout)"
+
+curl -fsS "$URL/api/w" -o /tmp/pb.kv.list.json
+shaA=$(jq -r --arg id "$idA" '.workspaces[]|select(.id==$id)|.session_sha' /tmp/pb.kv.list.json)
+[ -n "$shaA" ] && [ "$shaA" != "null" ] && ok "A.session_sha=$shaA" || nok "A.session_sha missing"
+
+[ -n "$KVCACHE" ] && find "$KVCACHE" -maxdepth 1 -name '*.kv' ! -name 'sysprompt*' 2>/dev/null | grep -q . \
+    && ok "kvcache .kv present" || warn "no .kv in kvcache dir"
+
+wait_ready 90 && ok "B ready" || warn "B readyz timeout"
+curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X POST -d '{"text":"reply WORLD only"}' "$URL/api/w/$idB/input" | grep -q 202 && ok "input B" || nok "input B"
+wait_turn "$idB" "B1" "$TURN_TIMEOUT"
+check_turn_end B1 && ok "B answer_end" || nok "B no answer_end"
+
+say "[3/4] reactivate A (KV /switch)"
+act=$(curl -sS --max-time "$ACTIVATE_TIMEOUT" -o /dev/null -w '%{http_code}' -X POST "$URL/api/w/$idA/activate")
+[ "$act" = "200" ] && ok "reactivate A" || nok "reactivate A => $act"
+grep -q 'kv.switch_ok' /tmp/pb.kv-smoke.server.log 2>/dev/null && ok "kv.switch_ok in log" \
+    || warn "no kv.switch_ok (prefill_timeout fallback possible)"
+wait_ready "$READY_TIMEOUT" && ok "A ready after switch" || warn "A readyz timeout after switch"
+
+say "[4/4] recall on A"
+recall='What codeword did I ask you to remember? Reply with only that word.'
+curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+    -X POST -d "$(jq -nc --arg t "$recall" '{text:$t}')" "$URL/api/w/$idA/input" | grep -q 202 \
+    && ok "recall input" || nok "recall input"
+
+# ZEBRA must appear in answer/thinking after the final (recall) user event.
+if [ -n "$ROOT" ]; then
+    wait_turn_log "$idA" "$TURN_TIMEOUT" || true
+    if python3 - "$(events_log "$idA")" "$CODEWORD" <<'PY'
+import json, sys
+logpath, word = sys.argv[1], sys.argv[2].upper()
+last_user = -1
+chunks = []
+for line in open(logpath, encoding="utf-8", errors="replace"):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        ev = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    seq = ev.get("seq", 0)
+    k = ev.get("kind")
+    pl = ev.get("payload") or {}
+    txt = pl.get("text", "") if isinstance(pl, dict) else ""
+    if k == "user":
+        last_user = seq
+        chunks = []
+    elif k in ("answer", "thinking") and seq > last_user:
+        chunks.append(txt)
+sys.exit(0 if word in "".join(chunks).upper() else 1)
+PY
+    then
+        ok "recall mentions $CODEWORD"
+    else
+        nok "recall missing $CODEWORD"
+        tail -3 "$(events_log "$idA")" 2>/dev/null | sed 's/^/      /' || true
+    fi
+    grep -q 'answer_end' "$(events_log "$idA")" 2>/dev/null && ok "recall answer_end" || nok "recall no answer_end"
+else
+    wait_turn "$idA" "A2" "$TURN_TIMEOUT"
+    check_turn_end A2 && ok "recall answer_end" || nok "recall no answer_end"
+    check_log_word "$idA" "$CODEWORD" A2 && ok "recall $CODEWORD" || nok "recall missing $CODEWORD"
+fi
+
+if [ -n "$ROOT" ]; then
+    if grep -q 'End of earlier conversation' "$(events_log "$idA")" 2>/dev/null; then
+        warn "transcript re-prefill marker in events.log"
+    else
+        ok "no transcript re-prefill marker"
+    fi
+fi
+
+echo
+[ $fails -eq 0 ] && { say "PASS kv-resume-smoke $URL"; exit 0; }
+say "FAIL $fails check(s)"; exit 1

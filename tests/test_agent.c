@@ -246,6 +246,69 @@ static void test_switch_workspaces(void) {
     free(root);
 }
 
+static void test_kv_switch_workspaces(void) {
+    char *root = unique_root();
+    char kvcache[1200];
+    snprintf(kvcache, sizeof(kvcache), "%s/kvcache", root);
+    char mk[2048];
+    snprintf(mk, sizeof(mk), "mkdir -p %s %s/A %s/B", kvcache, root, root);
+    int rc = system(mk);
+    (void)rc;
+    setenv("PINBACK_TEST_KVCACHE", kvcache, 1);
+
+    pin_workspace_store *s = pin_workspace_store_open(root, 64);
+    char wsA[1024], wsB[1024];
+    snprintf(wsA, sizeof(wsA), "%s/A", root);
+    snprintf(wsB, sizeof(wsB), "%s/B", root);
+    char *idA = NULL, *idB = NULL;
+    pin_workspace_store_create(s, wsA, NULL, &idA, NULL);
+    pin_workspace_store_create(s, wsB, NULL, &idB, NULL);
+
+    pin_agent_config cfg = {
+        .agent_bin = "build/fake-kv-ds4-agent",
+        .kvcache_dir = kvcache,
+        .spawn_ready_ms = 5000,
+        .save_timeout_ms = 8000,
+        .term_timeout_ms = 3000,
+        .kv_resume = true,
+    };
+    pin_agent *a = pin_agent_new(&cfg, s);
+    EXPECT(a != NULL, "kv agent created");
+    EXPECT(pin_agent_activate(a, idA, NULL), "activate A (kv)");
+    EXPECT(pin_agent_submit(a, idA, "remember ZEBRA", NULL), "turn in A");
+    pin_event_log *logA = pin_workspace_store_event_log(s, idA);
+    char payload[512];
+    long long seq = -1;
+    wait_for_event(logA, "answer_end", 8000, payload, sizeof(payload), &seq);
+
+    pin_workspace_meta metaA;
+    EXPECT(pin_workspace_store_get(s, idA, &metaA), "get A meta");
+    EXPECT(metaA.session_sha == NULL, "no session_sha before switch away");
+
+    EXPECT(pin_agent_activate(a, idB, NULL), "switch to B");
+    pin_workspace_meta metaA2;
+    EXPECT(pin_workspace_store_get(s, idA, &metaA2), "get A meta after save");
+    EXPECT(metaA2.session_sha != NULL && metaA2.session_sha[0] != '\0',
+           "session_sha set on A after /save");
+    pin_workspace_meta_free(&metaA);
+    pin_workspace_meta_free(&metaA2);
+
+    EXPECT(pin_agent_activate(a, idA, NULL), "switch back to A (kv restore)");
+    pin_agent_submit(a, idA, "what was the magic word?", NULL);
+    wait_for_event(logA, "answer_end", 8000, payload, sizeof(payload), &seq);
+    EXPECT(!wait_snapshot_contains(logA, "Resuming an earlier session", 500),
+           "KV restore: no transcript re-prefill header");
+
+    pin_agent_free(a);
+    pin_workspace_store_close(s);
+    free(idA);
+    free(idB);
+    snprintf(mk, sizeof(mk), "rm -rf %s", root);
+    rc = system(mk);
+    (void)rc;
+    free(root);
+}
+
 static void test_reset(void) {
     char *root = unique_root();
     pin_workspace_store *s = pin_workspace_store_open(root, 64);
@@ -290,6 +353,7 @@ int run_agent_tests(void) {
     fails = 0;
     test_spawn_and_submit();
     test_switch_workspaces();
+    test_kv_switch_workspaces();
     test_reset();
     return fails ? 1 : 0;
 }

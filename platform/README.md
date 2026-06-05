@@ -9,7 +9,8 @@ The directory is named `platform/` after the convention used by respected C/C++
 codebases for OS-specific code — e.g. Godot (`platform/{macos,ios,android,
 linuxbsd,windows,web}`) and WebKit (`Source/WebCore/platform`). Each subdirectory
 is a self-contained project with its own build system; nothing here is shared at
-the code level on purpose, so each shell stays "maximally small".
+the code level except URL/config helpers in [`common/`](./common/), so each shell
+stays "maximally small".
 
 ## Design rules
 
@@ -57,9 +58,14 @@ http://10.0.2.2:8088       # Android emulator (host loopback alias)
 ```
 
 On a physical device, override `PINBACK_URL` with your machine's LAN / Tailscale
-address. In every shell, setting `PINBACK_URL` is also the desktop escape hatch:
-when set, the shell loads it verbatim and spawns nothing (point it at a server
-you run yourself, e.g. `pinback-server --bind 127.0.0.1:8088`).
+address, or use the in-app **Server settings** / connection screen (persisted URL).
+In every shell, setting `PINBACK_URL` is also the desktop escape hatch: when set,
+the shell loads it verbatim and spawns nothing (point it at a server you run
+yourself, e.g. `pinback-server --bind 127.0.0.1:8088`).
+
+If no server answers at the configured URL, shells show a connection panel instead
+of a blank webview. Desktop defaults (`127.0.0.1:8088`) and the Android emulator
+alias (`10.0.2.2:8088`) are intentional dev defaults — not hardcoded LAN IPs.
 
 ## Why these engines (and the Linux question)
 
@@ -115,7 +121,7 @@ SMOKE_ANDROID_RUNTIME=1 platform/smoke-test.sh android
 SMOKE_DEEP=1 platform/smoke-test.sh macos
 ```
 
-Environment variables: `WINDOWS_HOST` (default `mac@192.168.0.180`),
+Environment variables: `WINDOWS_HOST` (required for the `windows` smoke target),
 `ORB_MACHINE` (default `webkitium-ci`), `MAC_LAN_IP`, `LINUX_STARTUP_TIMEOUT`
 (default 35 — Linux GTK cold start under xvfb can take ~25s).
 

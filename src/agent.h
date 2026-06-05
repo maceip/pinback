@@ -3,6 +3,14 @@
 
 /* ds4-agent process supervisor.
  *
+ * Threading: one non-recursive api_mu serializes pin_agent_activate,
+ * pin_agent_submit, pin_agent_reset, and pin_agent_abort. HTTP handlers
+ * and other callers may invoke these concurrently; the mutex makes the
+ * supervisor single-flight. pin_agent_status_get is a snapshot read
+ * under a->mu and does not take api_mu. Internal a->mu guards child
+ * lifecycle; a->stdin_mu serializes stdin writes; a->sha_mu guards
+ * /save SHA capture. See docs/CONCURRENCY.md.
+ *
  * v0 contract:
  *   - Exactly one ds4-agent child process at any moment.
  *   - The active workspace's --chdir is passed at spawn time.
@@ -47,9 +55,9 @@ typedef struct {
     int spawn_ready_ms;      /* default 5000 */
     int save_timeout_ms;     /* default 5000 */
     int term_timeout_ms;     /* default 3000 */
-    bool kv_resume;          /* drive the TUI for exact /save + /switch
-                              * KV session resume (default off: clean
-                              * non-interactive transport + re-prefill) */
+    bool kv_resume;          /* TUI over pipes: /save + /switch KV resume
+                              * (default on in pinback-server; off =
+                              * --non-interactive + transcript re-prefill) */
 } pin_agent_config;
 
 typedef struct pin_agent pin_agent;

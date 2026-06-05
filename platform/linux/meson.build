@@ -14,8 +14,10 @@ project('pinback-shell', 'c',
 gtk    = dependency('gtk4')
 webkit = dependency('webkitgtk-6.0')
 adw    = dependency('libadwaita-1')
+common_inc = include_directories('../common')
 
-executable('pinback-shell', 'main.c',
+executable('pinback-shell', 'main.c', '../common/pinback_url.c',
+  include_directories : common_inc,
   dependencies : [gtk, webkit, adw],
   # Drop unreferenced sections, over-linked libs, and symbols for a smaller binary.
   c_args : ['-ffunction-sections', '-fdata-sections'],
@@ -26,6 +28,8 @@ executable('pinback-shell', 'main.c',
 # manager / launcher can show it (matched to the app id dev.pinback.shell).
 install_data('dev.pinback.shell.desktop',
   install_dir : get_option('datadir') / 'applications')
+install_data('../common/setup.html',
+  install_dir : get_option('bindir'))
 foreach sz : ['16', '32', '48', '64', '128', '256', '512']
   install_data('icons' / 'hicolor' / (sz + 'x' + sz) / 'apps' / 'dev.pinback.shell.png',
     install_dir : get_option('datadir') / 'icons' / 'hicolor' / (sz + 'x' + sz) / 'apps')

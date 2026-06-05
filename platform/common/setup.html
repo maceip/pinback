@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pinback — connect</title>
+<style>
+:root { color-scheme: light dark; --bg:#0d0f14; --fg:#e8eaef; --muted:#8b93a7; --accent:#6ea8fe; --err:#f87171; --ok:#4ade80; --border:#2a3142; }
+@media (prefers-color-scheme: light) {
+  :root { --bg:#f6f7fb; --fg:#1a1d26; --muted:#5c6478; --border:#d8dce8; }
+}
+* { box-sizing: border-box; }
+body { margin:0; min-height:100vh; font:15px/1.5 system-ui,sans-serif; background:var(--bg); color:var(--fg);
+  display:flex; align-items:center; justify-content:center; padding:24px; }
+.card { width:min(440px,100%); background:color-mix(in srgb, var(--fg) 4%, var(--bg));
+  border:1px solid var(--border); border-radius:14px; padding:28px 26px; box-shadow:0 12px 40px rgba(0,0,0,.25); }
+h1 { margin:0 0 6px; font-size:22px; font-weight:600; letter-spacing:-.02em; }
+p { margin:0 0 20px; color:var(--muted); font-size:14px; }
+label { display:block; font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.04em;
+  color:var(--muted); margin-bottom:6px; }
+input { width:100%; padding:10px 12px; border-radius:8px; border:1px solid var(--border);
+  background:var(--bg); color:var(--fg); font:inherit; }
+input:focus { outline:2px solid var(--accent); outline-offset:1px; }
+.row { display:flex; gap:10px; margin-top:18px; }
+button { flex:1; padding:10px 14px; border-radius:8px; border:none; font:inherit; font-weight:600; cursor:pointer; }
+#test { background:transparent; color:var(--fg); border:1px solid var(--border); }
+#connect { background:var(--accent); color:#fff; }
+button:disabled { opacity:.5; cursor:not-allowed; }
+#status { margin-top:14px; min-height:1.4em; font-size:13px; }
+#status.ok { color:var(--ok); }
+#status.err { color:var(--err); }
+#status.warn { color:var(--muted); }
+.hint { margin-top:16px; font-size:12px; color:var(--muted); }
+.hint code { font-size:11px; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Connect to Pinback</h1>
+  <p>No pinback-server responded. Enter the URL where <code>pinback-server</code> is running (LAN, Tailscale, or this machine).</p>
+  <label for="url">Server URL</label>
+  <input id="url" type="url" inputmode="url" autocomplete="url" spellcheck="false"
+         placeholder="http://127.0.0.1:8088">
+  <div class="row">
+    <button type="button" id="test">Test</button>
+    <button type="button" id="connect">Connect</button>
+  </div>
+  <div id="status" class="warn" aria-live="polite"></div>
+  <p class="hint">Desktop shells can bundle <code>pinback-server</code> next to the app. Mobile devices need your Mac/PC LAN or Tailscale address. Override with <code>PINBACK_URL</code> for development.</p>
+</div>
+<script>
+(function () {
+  const urlEl = document.getElementById('url');
+  const statusEl = document.getElementById('status');
+  const testBtn = document.getElementById('test');
+  const connectBtn = document.getElementById('connect');
+
+  function host() {
+    if (window.PinbackHost && typeof window.PinbackHost.getSavedUrl === 'function')
+      return window.PinbackHost;
+    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pinbackSetup)
+      return { post: (m) => window.webkit.messageHandlers.pinbackSetup.postMessage(m) };
+    if (window.chrome && window.chrome.webview)
+      return { post: (m) => window.chrome.webview.postMessage(m) };
+    return null;
+  }
+
+  function setStatus(text, cls) {
+    statusEl.textContent = text;
+    statusEl.className = cls || 'warn';
+  }
+
+  function normalize(u) {
+    u = (u || '').trim();
+    if (!u) return '';
+    if (!/^https?:\/\//i.test(u)) u = 'http://' + u;
+    return u.replace(/\/+$/, '');
+  }
+
+  function send(action) {
+    const url = normalize(urlEl.value);
+    if (!url) { setStatus('Enter a server URL.', 'err'); return; }
+    const h = host();
+    if (!h) { setStatus('Native bridge unavailable.', 'err'); return; }
+    setStatus(action === 'test' ? 'Testing…' : 'Connecting…', 'warn');
+    const msg = { type: 'pinback-setup', action, url };
+    if (h.postMessage) h.postMessage(msg);
+    else if (typeof h.post === 'function') h.post(JSON.stringify(msg));
+  }
+
+  testBtn.addEventListener('click', () => send('test'));
+  connectBtn.addEventListener('click', () => send('connect'));
+
+  const saved = (host() && typeof host().getSavedUrl === 'function') ? host().getSavedUrl() : '';
+  urlEl.value = saved || 'http://127.0.0.1:8088';
+  setStatus('Enter the server address and tap Test or Connect.', 'warn');
+})();
+</script>
+</body>
+</html>

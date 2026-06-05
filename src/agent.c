@@ -15,6 +15,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,11 +41,13 @@ struct pin_agent {
     pin_workspace_store *ws;
     char kvcache_path[1200]; /* resolved from cfg.kvcache_dir */
 
-    pthread_mutex_t mu; /* lifecycle: state + child pid */
-    pthread_cond_t cv;  /* signals state changes */
+    pthread_mutex_t api_mu; /* serializes activate/submit/reset/abort */
+    pthread_mutex_t mu;     /* lifecycle: state + child pid */
+    pthread_cond_t cv;      /* signals state changes */
     pin_agent_state state;
     char active_id[64];
     char active_path[1024];
+    uint64_t bind_gen; /* bumped on each workspace bind; stale emits drop */
 
     pid_t child_pid;
     int child_stdin;  /* write end */
@@ -76,14 +79,11 @@ struct pin_agent {
      * TUI stdout. A tailer thread parses the trace file and emits events. */
     char trace_path[1200];
     pthread_t trace_reader;
-    bool trace_running;
+    volatile sig_atomic_t trace_running;
 
-    /* /save SHA capture (TUI mode): the reader scans content for
-     * "saved session <sha>" and signals the waiting switch. */
+    /* /save SHA capture (TUI mode): reader scans for "saved session <sha>". */
     pthread_mutex_t sha_mu;
-    pthread_cond_t sha_cv;
     char captured_sha[64];
-    bool sha_pending;
 
     /* Counters. */
     long long turns_total;
@@ -108,6 +108,23 @@ const char *pin_agent_state_name(pin_agent_state s)
         return "dead";
     }
     return "unknown";
+}
+
+/* ds4-agent always writes KV under $HOME/.ds4/kvcache. When pinback is
+ * configured with a custom kvcache_dir matching that layout, point HOME
+ * at the parent so agent and supervisor agree on save paths. */
+static void agent_apply_kvcache_home_env(const char *kvcache_dir)
+{
+    if (!kvcache_dir || !*kvcache_dir)
+        return;
+    static const char suffix[] = "/.ds4/kvcache";
+    size_t dl = strlen(kvcache_dir);
+    size_t sl = sizeof(suffix) - 1;
+    if (dl <= sl || strcmp(kvcache_dir + dl - sl, suffix) != 0)
+        return;
+    char home[1200];
+    snprintf(home, sizeof(home), "%.*s", (int)(dl - sl), kvcache_dir);
+    setenv("HOME", home, 1);
 }
 
 static void agent_resolve_kvcache_path(pin_agent *a)
@@ -193,40 +210,122 @@ static bool kv_wait_switch_locked(pin_agent *a, long long deadline_ms)
     return a->switch_restored;
 }
 
+/* Wait until the agent is not mid-turn (or timeout). Does not hold a->mu. */
+static bool kv_wait_not_busy(pin_agent *a, long long deadline_ms)
+{
+    while ((long long)pin_monotonic_ms() < deadline_ms) {
+        pthread_mutex_lock(&a->mu);
+        pin_agent_state st = a->state;
+        pthread_mutex_unlock(&a->mu);
+        if (st != PIN_AGENT_STATE_BUSY)
+            return true;
+        usleep(40 * 1000);
+    }
+    return false;
+}
+
+/* ds4-agent accepts an 8-hex prefix for /switch; normalize for the command. */
+static void kv_sha_switch_arg(const char *sha, char *out, size_t cap)
+{
+    if (!out || cap < 2) {
+        if (out && cap)
+            out[0] = '\0';
+        return;
+    }
+    size_t j = 0;
+    for (const char *p = sha; *p && j < cap - 1; p++) {
+        char c = *p;
+        if ((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))
+            out[j++] = (char)tolower((unsigned char)c);
+    }
+    if (j > 8)
+        j = 8;
+    out[j] = '\0';
+}
+
 /* ====================================================================
  * Event emission helpers (always tagged with workspace_id).
+ *
+ * Reader threads may emit while pin_agent_activate rebinds active_id.
+ * Snapshot ws_id + bind_gen under a->mu; drop the append if the bind
+ * changed before we write (see docs/CONCURRENCY.md).
  * ==================================================================== */
 
-static void emit_event(pin_agent *a, const char *kind, const char *json, size_t len)
+typedef struct {
+    char ws_id[64];
+    char ws_path[1024];
+    uint64_t bind_gen;
+} agent_bind_snap;
+
+static agent_bind_snap agent_bind_snapshot(pin_agent *a)
 {
-    pin_event_log *log = pin_workspace_store_event_log(a->ws, a->active_id);
+    agent_bind_snap s;
+    memset(&s, 0, sizeof(s));
+    pthread_mutex_lock(&a->mu);
+    s.bind_gen = a->bind_gen;
+    snprintf(s.ws_id, sizeof(s.ws_id), "%s", a->active_id);
+    snprintf(s.ws_path, sizeof(s.ws_path), "%s", a->active_path);
+    pthread_mutex_unlock(&a->mu);
+    return s;
+}
+
+static bool agent_bind_still_valid(pin_agent *a, const agent_bind_snap *snap)
+{
+    pthread_mutex_lock(&a->mu);
+    bool ok = snap->bind_gen == a->bind_gen && strcmp(snap->ws_id, a->active_id) == 0;
+    pthread_mutex_unlock(&a->mu);
+    return ok;
+}
+
+static void emit_event_snap(pin_agent *a, const agent_bind_snap *snap, const char *kind,
+                            const char *json, size_t len)
+{
+    if (!snap->ws_id[0])
+        return;
+    pin_event_log *log = pin_workspace_store_event_log(a->ws, snap->ws_id);
     if (!log)
+        return;
+    if (!agent_bind_still_valid(a, snap))
         return;
     pin_event_log_append(log, kind, json, len);
 }
 
+static void emit_event(pin_agent *a, const char *kind, const char *json, size_t len)
+{
+    agent_bind_snap snap = agent_bind_snapshot(a);
+    emit_event_snap(a, &snap, kind, json, len);
+}
+
 static void emit_state(pin_agent *a)
 {
+    pin_agent_state st;
+    agent_bind_snap snap;
+    pthread_mutex_lock(&a->mu);
+    st = a->state;
+    snap.bind_gen = a->bind_gen;
+    snprintf(snap.ws_id, sizeof(snap.ws_id), "%s", a->active_id);
+    snprintf(snap.ws_path, sizeof(snap.ws_path), "%s", a->active_path);
+    pthread_mutex_unlock(&a->mu);
+
     pin_buf b;
     pin_buf_init(&b);
     pin_buf_putc(&b, '{');
     pin_buf_puts(&b, "\"state\":");
-    pin_json_str(&b, pin_agent_state_name(a->state));
+    pin_json_str(&b, pin_agent_state_name(st));
     pin_buf_puts(&b, ",\"workspace\":");
-    if (a->active_id[0]) {
+    if (snap.ws_id[0]) {
         pin_buf_putc(&b, '{');
         pin_buf_puts(&b, "\"id\":");
-        pin_json_str(&b, a->active_id);
+        pin_json_str(&b, snap.ws_id);
         pin_buf_puts(&b, ",\"path\":");
-        pin_json_str(&b, a->active_path);
+        pin_json_str(&b, snap.ws_path);
         pin_buf_putc(&b, '}');
     } else {
         pin_buf_puts(&b, "null");
     }
     pin_buf_putc(&b, '}');
-    if (a->active_id[0]) {
-        emit_event(a, "agent.state", b.ptr, b.len);
-    }
+    if (snap.ws_id[0])
+        emit_event_snap(a, &snap, "agent.state", b.ptr, b.len);
     pin_buf_free(&b);
 }
 
@@ -305,13 +404,13 @@ static void emit_turn_end(pin_agent *a)
     emit_event(a, "answer_end", "{}", 2);
 }
 
-/* Shadow-git dir for the active workspace's per-turn change tracking. */
-static bool agent_snapshot_git_dir(pin_agent *a, char *buf, size_t cap)
+static bool agent_snapshot_git_dir_for(pin_workspace_store *ws, const char *ws_id,
+                                       char *buf, size_t cap)
 {
-    if (!a->active_id[0])
+    if (!ws_id || !ws_id[0])
         return false;
     char wsd[1024];
-    if (!pin_workspace_store_ws_dir(a->ws, a->active_id, wsd, sizeof(wsd)))
+    if (!pin_workspace_store_ws_dir(ws, ws_id, wsd, sizeof(wsd)))
         return false;
     int n = snprintf(buf, cap, "%s/snapshot.git", wsd);
     return n > 0 && (size_t)n < cap;
@@ -335,12 +434,13 @@ static void emit_turn_diff(pin_agent *a, const char *diff, size_t len, int nfile
  * publish a turn_diff event (agent-independent change review). */
 static void agent_emit_turn_changes(pin_agent *a)
 {
+    agent_bind_snap snap = agent_bind_snapshot(a);
     char gd[1100];
-    if (!a->active_path[0] || !agent_snapshot_git_dir(a, gd, sizeof(gd)))
+    if (!snap.ws_path[0] || !agent_snapshot_git_dir_for(a->ws, snap.ws_id, gd, sizeof(gd)))
         return;
     pin_buf d;
     pin_buf_init(&d);
-    if (pin_snapshot_diff(gd, a->active_path, &d) && d.len > 0) {
+    if (pin_snapshot_diff(gd, snap.ws_path, &d) && d.len > 0) {
         int nf = 0;
         const char *p = d.ptr;
         while ((p = strstr(p, "diff --git ")) != NULL) {
@@ -460,10 +560,9 @@ static void sha_scan_after(pin_agent *a, const char *line, size_t n, const char 
         take = cap;
     memcpy(a->captured_sha, line + i, take);
     a->captured_sha[take] = '\0';
-    a->sha_pending = false;
-    pthread_cond_broadcast(&a->sha_cv);
     pthread_mutex_unlock(&a->sha_mu);
-    pin_workspace_store_set_session_sha(a->ws, a->active_id, a->captured_sha);
+    /* Do not persist here: active_id may already point at the next workspace
+     * during a switch. kv_save_and_capture persists using a pinned ws id. */
 }
 
 static void capture_session_sha(pin_agent *a, const char *line, size_t n)
@@ -501,10 +600,7 @@ static void capture_sha_in_buf(pin_agent *a, const char *s, size_t n)
                 size_t take = j < sizeof(a->captured_sha) - 1 ? j : sizeof(a->captured_sha) - 1;
                 memcpy(a->captured_sha, h, take);
                 a->captured_sha[take] = '\0';
-                a->sha_pending = false;
-                pthread_cond_broadcast(&a->sha_cv);
                 pthread_mutex_unlock(&a->sha_mu);
-                pin_workspace_store_set_session_sha(a->ws, a->active_id, a->captured_sha);
             }
             p = hit + plen;
             left = (size_t)(s + n - p);
@@ -621,7 +717,7 @@ static void *trace_reader_fn(void *arg)
     pin_agent *a = ((reader_args *)arg)->a;
     free(arg);
     int fd = -1;
-    for (int i = 0; i < 400 && a->trace_running && fd < 0; i++) {
+    for (int i = 0; i < 400 && a->trace_running != 0 && fd < 0; i++) {
         fd = open(a->trace_path, O_RDONLY);
         if (fd < 0)
             usleep(25 * 1000);
@@ -645,7 +741,7 @@ static void *trace_reader_fn(void *arg)
     char rb[8192];
     long long last_data = (long long)pin_monotonic_ms();
     bool flushed = true;
-    while (fd >= 0 && ts && a->trace_running) {
+    while (fd >= 0 && ts && a->trace_running != 0) {
         ssize_t n = read(fd, rb, sizeof(rb));
         if (n > 0) {
             pin_buf_append(&line, rb, (size_t)n);
@@ -681,7 +777,7 @@ static void *trace_reader_fn(void *arg)
     if (fd >= 0)
         close(fd);
     pthread_mutex_lock(&a->mu);
-    a->trace_running = false;
+    a->trace_running = 0;
     pthread_cond_broadcast(&a->cv);
     pthread_mutex_unlock(&a->mu);
     return NULL;
@@ -960,6 +1056,8 @@ static bool spawn_child_locked(pin_agent *a, const char *path)
         char *argv[16];
         int ai = 0;
         argv[ai++] = (char *)a->cfg.agent_bin;
+        if (a->cfg.kvcache_dir && *a->cfg.kvcache_dir)
+            agent_apply_kvcache_home_env(a->cfg.kvcache_dir);
         if (a->cfg.kv_resume) {
             /* TUI mode over pipes: linenoise needs to believe it has a
              * terminal so /save and /switch work (see transport-findings). */
@@ -1023,9 +1121,9 @@ static bool spawn_child_locked(pin_agent *a, const char *path)
     if (a->cfg.kv_resume && a->trace_path[0]) {
         reader_args *ra3 = pin_xcalloc(1, sizeof(*ra3));
         ra3->a = a;
-        a->trace_running = true;
+        a->trace_running = 1;
         if (pthread_create(&a->trace_reader, NULL, trace_reader_fn, ra3) != 0) {
-            a->trace_running = false;
+            a->trace_running = 0;
             free(ra3);
         } else {
             pthread_detach(a->trace_reader);
@@ -1059,42 +1157,54 @@ static void wait_reader_threads(pin_agent *a)
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += 2;
-    while ((a->reader_running || a->err_running || a->trace_running)) {
+    while ((a->reader_running || a->err_running || a->trace_running != 0)) {
         if (pthread_cond_timedwait(&a->cv, &a->mu, &ts) != 0)
             break;
     }
 }
 
-static bool kill_child_locked(pin_agent *a, int term_timeout_ms)
+/* Reap the child. Blocks on waitpid; never hold a->mu across blocking I/O. */
+static bool kill_child(pin_agent *a, int term_timeout_ms)
 {
-    if (a->child_pid <= 0)
+    pthread_mutex_lock(&a->mu);
+    pid_t pid = a->child_pid;
+    if (pid <= 0) {
+        pthread_mutex_unlock(&a->mu);
         return true;
-    pid_t pgid = -a->child_pid;
-    kill(pgid, SIGTERM);
-    a->trace_running = false; /* tell the trace tailer to exit */
-    /* Close stdin so the agent's read loop exits naturally. */
-    if (a->child_stdin >= 0) {
-        close(a->child_stdin);
-        a->child_stdin = -1;
     }
+    a->trace_running = 0;
+    int stdin_fd = a->child_stdin;
+    a->child_stdin = -1;
+    pthread_mutex_unlock(&a->mu);
+
+    if (stdin_fd >= 0)
+        close(stdin_fd);
+
+    pid_t pgid = -pid;
+    kill(pgid, SIGTERM);
     long long deadline = (long long)pin_monotonic_ms() + term_timeout_ms;
+    bool reaped = false;
     while ((long long)pin_monotonic_ms() < deadline) {
         int st;
-        pid_t r = waitpid(a->child_pid, &st, WNOHANG);
-        if (r == a->child_pid) {
-            a->child_pid = -1;
-            close_child_io(a);
-            wait_reader_threads(a);
-            return true;
+        pid_t r = waitpid(pid, &st, WNOHANG);
+        if (r == pid) {
+            reaped = true;
+            break;
         }
         usleep(50 * 1000);
     }
-    kill(pgid, SIGKILL);
-    int st;
-    waitpid(a->child_pid, &st, 0);
-    a->child_pid = -1;
-    close_child_io(a);
+    if (!reaped) {
+        kill(pgid, SIGKILL);
+        waitpid(pid, NULL, 0);
+    }
+
+    pthread_mutex_lock(&a->mu);
+    if (a->child_pid == pid) {
+        a->child_pid = -1;
+        close_child_io(a);
+    }
     wait_reader_threads(a);
+    pthread_mutex_unlock(&a->mu);
     return true;
 }
 
@@ -1187,11 +1297,11 @@ pin_agent *pin_agent_new(const pin_agent_config *cfg, pin_workspace_store *ws)
     a->state = PIN_AGENT_STATE_IDLE;
     a->child_pid = -1;
     a->child_stdin = a->child_stdout = a->child_stderr = -1;
+    pthread_mutex_init(&a->api_mu, NULL);
     pthread_mutex_init(&a->mu, NULL);
     pthread_cond_init(&a->cv, NULL);
     pthread_mutex_init(&a->stdin_mu, NULL);
     pthread_mutex_init(&a->sha_mu, NULL);
-    pthread_cond_init(&a->sha_cv, NULL);
     return a;
 }
 
@@ -1199,15 +1309,14 @@ void pin_agent_free(pin_agent *a)
 {
     if (!a)
         return;
-    pthread_mutex_lock(&a->mu);
-    if (a->child_pid > 0)
-        kill_child_locked(a, a->cfg.term_timeout_ms);
-    pthread_mutex_unlock(&a->mu);
+    pthread_mutex_lock(&a->api_mu);
+    kill_child(a, a->cfg.term_timeout_ms);
+    pthread_mutex_unlock(&a->api_mu);
+    pthread_mutex_destroy(&a->api_mu);
     pthread_mutex_destroy(&a->mu);
     pthread_cond_destroy(&a->cv);
     pthread_mutex_destroy(&a->stdin_mu);
     pthread_mutex_destroy(&a->sha_mu);
-    pthread_cond_destroy(&a->sha_cv);
     if (a->vt)
         pin_vterm_free(a->vt);
     free(a->pending_resume);
@@ -1244,33 +1353,68 @@ static bool newest_saved_session(pin_agent *a, time_t since, char *out, size_t c
     return found;
 }
 
-/* KV mode: ask the agent to /save, then wait (bounded) for the new KV
- * file to appear on disk and read its SHA from the filename. On success
- * the workspace's session_sha is persisted; on timeout the caller falls
- * through to transcript re-prefill. */
+/* KV mode: /save on switch-away. Confirms via kvcache file (primary) or
+ * "saved session" on stdout (secondary). Must not hold a->mu (polls disk). */
 static bool kv_save_and_capture(pin_agent *a)
 {
+    char ws_id[64];
+    pthread_mutex_lock(&a->mu);
+    if (a->child_pid <= 0 || !a->active_id[0]) {
+        pthread_mutex_unlock(&a->mu);
+        return false;
+    }
+    snprintf(ws_id, sizeof(ws_id), "%s", a->active_id);
+    pthread_mutex_unlock(&a->mu);
+
+    long drain_ms = a->cfg.spawn_ready_ms > 0 ? a->cfg.spawn_ready_ms : 30000;
+    (void)kv_wait_not_busy(a, (long long)pin_monotonic_ms() + drain_ms);
+
+    pthread_mutex_lock(&a->sha_mu);
+    a->captured_sha[0] = '\0';
+    pthread_mutex_unlock(&a->sha_mu);
+
     time_t t0 = time(NULL);
     if (!stdin_write_line(a, "/save"))
         return false;
-    long ms = a->cfg.save_timeout_ms > 0 ? a->cfg.save_timeout_ms : 8000;
+
+    long ms = a->cfg.save_timeout_ms > 0 ? a->cfg.save_timeout_ms : 15000;
     long long deadline = (long long)pin_monotonic_ms() + ms;
     char sha[64];
     while ((long long)pin_monotonic_ms() < deadline) {
         if (newest_saved_session(a, t0, sha, sizeof(sha))) {
-            pin_workspace_store_set_session_sha(a->ws, a->active_id, sha);
-            return true;
+            if (pin_workspace_store_set_session_sha(a->ws, ws_id, sha)) {
+                PIN_LOG_INFOF("kv.save_ok", "workspace=%s sha=%s via=kvcache", ws_id, sha);
+                return true;
+            }
+            PIN_LOG_WARNF("kv.save_persist_fail", "workspace=%s sha=%s", ws_id, sha);
         }
-        usleep(150 * 1000);
+        pthread_mutex_lock(&a->sha_mu);
+        bool got = a->captured_sha[0] != '\0';
+        if (got)
+            snprintf(sha, sizeof(sha), "%s", a->captured_sha);
+        pthread_mutex_unlock(&a->sha_mu);
+        if (got) {
+            if (pin_workspace_store_set_session_sha(a->ws, ws_id, sha)) {
+                PIN_LOG_INFOF("kv.save_ok", "workspace=%s sha=%s via=stdout", ws_id, sha);
+                return true;
+            }
+            PIN_LOG_WARNF("kv.save_persist_fail", "workspace=%s sha=%s", ws_id, sha);
+        }
+        usleep(50 * 1000);
     }
+    PIN_LOG_WARNF("kv.save_timeout", "workspace=%s ms=%ld", ws_id, ms);
     return false;
 }
 
 bool pin_agent_activate(pin_agent *a, const char *workspace_id, char **out_err)
 {
+    if (!a)
+        return false;
+    pthread_mutex_lock(&a->api_mu);
     if (out_err)
         *out_err = NULL;
-    if (!a || !workspace_id || !*workspace_id) {
+    if (!workspace_id || !*workspace_id) {
+        pthread_mutex_unlock(&a->api_mu);
         if (out_err)
             *out_err = pin_xstrdup("workspace id required");
         return false;
@@ -1279,6 +1423,7 @@ bool pin_agent_activate(pin_agent *a, const char *workspace_id, char **out_err)
     if (!pin_workspace_store_get(a->ws, workspace_id, &meta)) {
         if (out_err)
             *out_err = pin_xstrdup("unknown workspace id");
+        pthread_mutex_unlock(&a->api_mu);
         return false;
     }
 
@@ -1287,20 +1432,31 @@ bool pin_agent_activate(pin_agent *a, const char *workspace_id, char **out_err)
     if (a->child_pid > 0 && strcmp(a->active_id, workspace_id) == 0) {
         pthread_mutex_unlock(&a->mu);
         pin_workspace_meta_free(&meta);
+        pthread_mutex_unlock(&a->api_mu);
         return true;
     }
-    /* Tear down the outgoing workspace's agent. In KV mode we first ask it
-     * to /save so the session can be restored exactly on return; otherwise
-     * there is nothing to persist (the event log + files already are). */
+
+    pid_t outgoing_pid = -1;
+    bool kv_save = false;
     if (a->child_pid > 0) {
+        outgoing_pid = a->child_pid;
+        kv_save = a->cfg.kv_resume;
         a->state = PIN_AGENT_STATE_DRAINING;
-        if (a->cfg.kv_resume)
-            kv_save_and_capture(a);
-        kill_child_locked(a, a->cfg.term_timeout_ms);
     }
+    pthread_mutex_unlock(&a->mu);
+
+    /* /save polls kvcache and must not hold a->mu (reader threads signal cv). */
+    if (outgoing_pid > 0) {
+        if (kv_save)
+            kv_save_and_capture(a);
+        kill_child(a, a->cfg.term_timeout_ms);
+    }
+
+    pthread_mutex_lock(&a->mu);
     /* Bind to new workspace. */
     snprintf(a->active_id, sizeof(a->active_id), "%s", meta.id);
     snprintf(a->active_path, sizeof(a->active_path), "%s", meta.path);
+    a->bind_gen++;
     pin_workspace_store_set_active(a->ws, meta.id);
     a->state = PIN_AGENT_STATE_SPAWNING;
     bool ok = spawn_child_locked(a, meta.path);
@@ -1311,6 +1467,7 @@ bool pin_agent_activate(pin_agent *a, const char *workspace_id, char **out_err)
         if (out_err)
             *out_err = pin_xstrdup("failed to spawn agent");
         pin_workspace_meta_free(&meta);
+        pthread_mutex_unlock(&a->api_mu);
         return false;
     }
     /* Resume continuity. KV mode: if this workspace has a saved session,
@@ -1329,34 +1486,46 @@ bool pin_agent_activate(pin_agent *a, const char *workspace_id, char **out_err)
             PIN_LOG_WARNF("kv.prefill_timeout", "workspace=%s", meta.id);
         }
         a->switch_restored = false;
+        char sha_arg[16];
+        kv_sha_switch_arg(meta.session_sha, sha_arg, sizeof(sha_arg));
         char cmd[128];
-        snprintf(cmd, sizeof(cmd), "/switch %.8s", meta.session_sha);
+        snprintf(cmd, sizeof(cmd), "/switch %s", sha_arg);
         stdin_write_line(a, cmd);
-        long switch_ms = a->cfg.save_timeout_ms > 0 ? a->cfg.save_timeout_ms : 8000;
+        long switch_ms = a->cfg.save_timeout_ms > 0 ? a->cfg.save_timeout_ms : 15000;
         long long switch_deadline = (long long)pin_monotonic_ms() + switch_ms;
         if (!kv_wait_switch_locked(a, switch_deadline)) {
-            PIN_LOG_WARNF("kv.switch_timeout", "workspace=%s sha=%.8s ms=%ld", meta.id,
-                          meta.session_sha, switch_ms);
+            PIN_LOG_WARNF("kv.switch_timeout", "workspace=%s sha=%s ms=%ld", meta.id,
+                          sha_arg, switch_ms);
         }
-        if (!a->switch_restored)
+        if (a->switch_restored) {
+            free(a->pending_resume);
+            a->pending_resume = NULL;
+            PIN_LOG_INFOF("kv.switch_ok", "workspace=%s sha=%s", meta.id, sha_arg);
+        } else {
             build_pending_resume(a, meta.id);
+        }
     } else {
         build_pending_resume(a, meta.id);
     }
     a->state = PIN_AGENT_STATE_READY;
-    emit_state(a);
     pthread_mutex_unlock(&a->mu);
+    emit_state(a);
     pin_workspace_meta_free(&meta);
+    pthread_mutex_unlock(&a->api_mu);
     return true;
 }
 
 bool pin_agent_submit(pin_agent *a, const char *workspace_id, const char *user_text, char **out_err)
 {
+    if (!a)
+        return false;
+    pthread_mutex_lock(&a->api_mu);
     if (out_err)
         *out_err = NULL;
-    if (!a || !user_text || !*user_text) {
+    if (!user_text || !*user_text) {
         if (out_err)
             *out_err = pin_xstrdup("text required");
+        pthread_mutex_unlock(&a->api_mu);
         return false;
     }
     pthread_mutex_lock(&a->mu);
@@ -1364,18 +1533,21 @@ bool pin_agent_submit(pin_agent *a, const char *workspace_id, const char *user_t
         pthread_mutex_unlock(&a->mu);
         if (out_err)
             *out_err = pin_xstrdup("workspace is not active");
+        pthread_mutex_unlock(&a->api_mu);
         return false;
     }
     if (a->child_pid <= 0) {
         pthread_mutex_unlock(&a->mu);
         if (out_err)
             *out_err = pin_xstrdup("agent not running");
+        pthread_mutex_unlock(&a->api_mu);
         return false;
     }
     if (a->state == PIN_AGENT_STATE_BUSY) {
         pthread_mutex_unlock(&a->mu);
         if (out_err)
             *out_err = pin_xstrdup("agent is busy");
+        pthread_mutex_unlock(&a->api_mu);
         return false;
     }
     a->state = PIN_AGENT_STATE_BUSY;
@@ -1383,58 +1555,69 @@ bool pin_agent_submit(pin_agent *a, const char *workspace_id, const char *user_t
     /* Snapshot the workspace so we can diff what this turn changes. */
     {
         char gd[1100];
-        if (a->active_path[0] && agent_snapshot_git_dir(a, gd, sizeof(gd)))
+        if (a->active_path[0] &&
+            agent_snapshot_git_dir_for(a->ws, a->active_id, gd, sizeof(gd)))
             pin_snapshot_begin(gd, a->active_path);
     }
+    char *pending = a->pending_resume;
+    a->pending_resume = NULL;
+    pthread_mutex_unlock(&a->mu);
     /* Emit the user event with exactly what the user typed. */
     emit_user(a, user_text);
     /* On the first prompt after a workspace switch, silently prepend the
      * staged transcript so the fresh agent has the prior context. */
     char *combined = NULL;
     const char *to_send = user_text;
-    if (a->pending_resume) {
+    if (pending) {
         pin_buf b;
         pin_buf_init(&b);
-        pin_buf_puts(&b, a->pending_resume);
+        pin_buf_puts(&b, pending);
         pin_buf_puts(&b, "\n\n");
         pin_buf_puts(&b, user_text);
         combined = pin_buf_detach(&b);
         to_send = combined;
-        free(a->pending_resume);
-        a->pending_resume = NULL;
+        free(pending);
     }
     bool ok = stdin_write_line(a, to_send);
     free(combined);
     if (!ok) {
+        pthread_mutex_lock(&a->mu);
         a->state = PIN_AGENT_STATE_DEAD;
-        emit_error(a, "agent.stdin", "write to agent stdin failed");
         pthread_mutex_unlock(&a->mu);
+        emit_error(a, "agent.stdin", "write to agent stdin failed");
         if (out_err)
             *out_err = pin_xstrdup("agent stdin write failed");
+        pthread_mutex_unlock(&a->api_mu);
         return false;
     }
     /* Turn end is detected on stderr (+DWARFSTAR_WAITING) or, in KV mode,
      * from the TUI status footer; the reader threads emit answer_end. */
-    pthread_mutex_unlock(&a->mu);
+    pthread_mutex_unlock(&a->api_mu);
     return true;
 }
 
 bool pin_agent_reset(pin_agent *a, const char *workspace_id, char **out_err)
 {
+    if (!a)
+        return false;
+    pthread_mutex_lock(&a->api_mu);
     if (out_err)
         *out_err = NULL;
-    if (!a || !workspace_id) {
+    if (!workspace_id) {
         if (out_err)
             *out_err = pin_xstrdup("workspace id required");
+        pthread_mutex_unlock(&a->api_mu);
         return false;
     }
     pthread_mutex_lock(&a->mu);
     bool was_active = (a->child_pid > 0 && strcmp(a->active_id, workspace_id) == 0);
-    if (was_active) {
+    if (was_active)
         a->state = PIN_AGENT_STATE_DRAINING;
-        kill_child_locked(a, a->cfg.term_timeout_ms);
-    }
     pthread_mutex_unlock(&a->mu);
+    if (was_active)
+        kill_child(a, a->cfg.term_timeout_ms);
+    pthread_mutex_unlock(&a->api_mu);
+
     char *err = NULL;
     bool ok = pin_workspace_store_reset(a->ws, workspace_id, &err);
     if (!ok) {
@@ -1444,9 +1627,8 @@ bool pin_agent_reset(pin_agent *a, const char *workspace_id, char **out_err)
             free(err);
         return false;
     }
-    if (was_active) {
+    if (was_active)
         return pin_agent_activate(a, workspace_id, out_err);
-    }
     return true;
 }
 
@@ -1454,13 +1636,18 @@ void pin_agent_abort(pin_agent *a)
 {
     if (!a)
         return;
+    pthread_mutex_lock(&a->api_mu);
     pthread_mutex_lock(&a->mu);
     if (a->child_pid > 0) {
         kill(-a->child_pid, SIGINT);
-        emit_event(a, "agent.aborted", "{}", 2);
         a->state = PIN_AGENT_STATE_READY;
+        pthread_mutex_unlock(&a->mu);
+        emit_event(a, "agent.aborted", "{}", 2);
+        pthread_mutex_unlock(&a->api_mu);
+        return;
     }
     pthread_mutex_unlock(&a->mu);
+    pthread_mutex_unlock(&a->api_mu);
 }
 
 void pin_agent_status_get(pin_agent *a, pin_agent_status *out)

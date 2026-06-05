@@ -10,12 +10,9 @@
 #   4. The new workspace can take its own turn (independent state)
 #   5. Reset truncates the events log + clears session_sha
 #
-# Known gap (deferred to docs/todo-paint.md): ds4-agent in
-# --non-interactive mode does not honor /save or /switch as runtime
-# commands -- those only work in the TUI loop. So workspace switches in
-# v0 are NOT session-preserving. The architecture (session_sha field,
-# /switch on respawn) is wired and will activate when the pty-based
-# interactive supervisor lands.
+# KV resume is ON by default (TUI over pipes, /save + /switch). This script
+# exercises multi-workspace spawn/switch/reset but does not assert KV recall;
+# use scripts/qa/kv-resume-smoke for /save+/switch validation against a real agent.
 #
 # Usage: pinback-e2e [URL]
 # Server must already be running with --agent-bin pointing at a real
@@ -191,11 +188,7 @@ if [ "$shaB" = "null" ] || [ -z "$shaB" ]; then ok "B.session_sha cleared on res
 else nok "B.session_sha still set after reset ($shaB)"; fi
 
 echo
-warn 'note: ds4-agent --non-interactive does not honor /save or /switch'
-warn '      (verified -- see docs/transport-findings.md), so continuity is'
-warn '      pinback-owned: switching to a workspace with history re-prefills'
-warn '      its transcript into the next prompt. Files persist on disk and'
-warn '      the UI shows prior turns from the event log regardless.'
+warn 'for KV /save + /switch recall, run: scripts/qa/kv-resume-smoke URL'
 echo
 if [ $fails -eq 0 ]; then say "PASS  pinback-e2e clean"; exit 0; fi
 say "FAIL  $fails check(s) failed"; exit 1

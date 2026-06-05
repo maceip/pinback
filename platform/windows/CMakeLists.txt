@@ -15,8 +15,10 @@ FetchContent_Declare(webview2
     DOWNLOAD_NAME "webview2-${WEBVIEW2_VERSION}.zip")
 FetchContent_MakeAvailable(webview2)
 
-add_executable(pinback-shell WIN32 main.cpp app.manifest app.rc)
-target_include_directories(pinback-shell PRIVATE "${webview2_SOURCE_DIR}/build/native/include")
+add_executable(pinback-shell WIN32 main.cpp ../common/pinback_url.c app.manifest app.rc)
+target_include_directories(pinback-shell PRIVATE
+    "${webview2_SOURCE_DIR}/build/native/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../common")
 # This is a Unicode app — all Win32 calls are the ...W variants.
 target_compile_definitions(pinback-shell PRIVATE UNICODE _UNICODE)
 # Only system libs (Advapi32/Ole32 are pulled in via #pragma comment in main.cpp).

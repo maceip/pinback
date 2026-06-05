@@ -27,6 +27,10 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
+
+extern "C" {
+#include "pinback_url.h"
+}
 #include <dwmapi.h>
 #include <wrl.h>
 #include <string>
@@ -55,6 +59,8 @@ using namespace Microsoft::WRL;
 static ComPtr<ICoreWebView2Controller> g_controller;
 static ComPtr<ICoreWebView2> g_webview;
 static HANDLE g_server = nullptr;
+static bool g_in_setup = false;
+static char g_cockpit_url[PINBACK_URL_MAX] = {};
 
 // Native menubar state.
 static HMENU g_menubar = nullptr;
@@ -71,42 +77,75 @@ static ThemeMode g_theme = THEME_AUTO;
 enum : UINT {
     ID_VIEW_BACK = 100,
     ID_VIEW_RELOAD,
+    ID_VIEW_SERVER,
     ID_THEME_AUTO,
     ID_THEME_LIGHT,
     ID_THEME_DARK,
     ID_WS_BASE = 1000,   // workspace items: ID_WS_BASE + index
 };
 
-static constexpr int kPort = 8088;
-
 static bool HasUrlOverride(wchar_t* out, DWORD cap) {
     DWORD n = GetEnvironmentVariableW(L"PINBACK_URL", out, cap);
     return n > 0 && n < cap;
 }
 
-static LPCWSTR StartUrl() {
-    static wchar_t buf[2048];
-    if (HasUrlOverride(buf, ARRAYSIZE(buf))) return buf;
-    return L"http://127.0.0.1:8088";
+static std::wstring Utf8ToWide(const char* s) {
+    if (!s || !*s) return L"";
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
+    if (n <= 0) return L"";
+    std::wstring w(n - 1, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s, -1, w.data(), n);
+    return w;
 }
 
-static bool HealthOk() {
-    SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
-    if (s == INVALID_SOCKET) return false;
-    sockaddr_in sa = {};
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(kPort);
-    InetPtonW(AF_INET, L"127.0.0.1", &sa.sin_addr);
-    bool ok = false;
-    if (connect(s, (sockaddr*)&sa, sizeof(sa)) == 0) {
-        const char* req = "GET /healthz HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n";
-        send(s, req, (int)strlen(req), 0);
-        char buf[64] = {};
-        int n = recv(s, buf, sizeof(buf) - 1, 0);
-        ok = n > 12 && memcmp(buf, "HTTP/", 5) == 0 && strstr(buf, " 200") != nullptr;
+static void LoadCockpit(const wchar_t* url) {
+    if (!g_webview || !url || !*url) return;
+    g_in_setup = false;
+    char narrow[PINBACK_URL_MAX];
+    WideCharToMultiByte(CP_UTF8, 0, url, -1, narrow, sizeof narrow, nullptr, nullptr);
+    strncpy_s(g_cockpit_url, narrow, _TRUNCATE);
+    g_webview->Navigate(url);
+}
+
+static void LoadSetupPrefill(const char* prefill) {
+    char setup_uri[PINBACK_URL_MAX + 16];
+    if (pinback_setup_file_uri(setup_uri, sizeof setup_uri) != 0) return;
+    g_in_setup = true;
+    g_webview->Navigate(Utf8ToWide(setup_uri).c_str());
+    if (prefill && *prefill) {
+        std::wstring esc;
+        for (const char* c = prefill; *c; ++c) {
+            if (*c == '\\' || *c == '\'') esc += L'\\';
+            esc += (wchar_t)(unsigned char)*c;
+        }
+        std::wstring js = L"document.getElementById('url').value='" + esc + L"';";
+        g_webview->ExecuteScript(js.c_str(),
+            Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+                [](HRESULT, LPCWSTR) -> HRESULT { return S_OK; }).Get());
     }
-    closesocket(s);
-    return ok;
+}
+
+static void BeginSession() {
+    wchar_t envUrl[2048];
+    if (HasUrlOverride(envUrl, ARRAYSIZE(envUrl))) {
+        LoadCockpit(envUrl);
+        return;
+    }
+    char url[PINBACK_URL_MAX];
+    pinback_url_resolve(url, sizeof url, pinback_url_default());
+    if (pinback_health_ok(url)) {
+        LoadCockpit(Utf8ToWide(url).c_str());
+        return;
+    }
+    WSADATA wsa;
+    WSAStartup(MAKEWORD(2, 2), &wsa);
+    StartServer();
+    pinback_url_resolve(url, sizeof url, pinback_url_default());
+    if (pinback_health_ok(url)) {
+        LoadCockpit(Utf8ToWide(url).c_str());
+        return;
+    }
+    LoadSetupPrefill(url);
 }
 
 static std::wstring ServerPath() {
@@ -133,7 +172,9 @@ static void StartServer() {
                        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
         g_server = pi.hProcess;
         CloseHandle(pi.hThread);
-        for (int i = 0; i < 150 && !HealthOk(); i++) Sleep(200);
+        char url[PINBACK_URL_MAX];
+        pinback_url_resolve(url, sizeof url, pinback_url_default());
+        for (int i = 0; i < 150 && !pinback_health_ok(url); i++) Sleep(200);
     }
 }
 
@@ -199,6 +240,7 @@ static void BuildMenuBar(HWND hWnd) {
     g_viewMenu = CreatePopupMenu();
     AppendMenuW(g_viewMenu, MF_STRING | MF_GRAYED, ID_VIEW_BACK, L"Previous workspace");
     AppendMenuW(g_viewMenu, MF_STRING, ID_VIEW_RELOAD, L"&Reload");
+    AppendMenuW(g_viewMenu, MF_STRING, ID_VIEW_SERVER, L"Server &settings\u2026");
     AppendMenuW(g_viewMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(g_viewMenu, MF_STRING, ID_THEME_AUTO,  L"Theme: System");
     AppendMenuW(g_viewMenu, MF_STRING, ID_THEME_LIGHT, L"Theme: Light");
@@ -297,6 +339,41 @@ static void ParseWorkspaceMessage(const std::wstring& s,
         } else {
             ++p;   // unexpected token; skip
         }
+    }
+}
+
+static void OnSetupMessage(const std::wstring& json) {
+    std::wstring action, url;
+    if (size_t p = json.find(L"\"action\""); p != std::wstring::npos) {
+        p += 8; SkipWs(json, p);
+        if (p < json.size() && json[p] == L'"') action = JsonStr(json, p);
+    }
+    if (size_t p = json.find(L"\"url\""); p != std::wstring::npos) {
+        p += 5; SkipWs(json, p);
+        if (p < json.size() && json[p] == L'"') url = JsonStr(json, p);
+    }
+    if (url.empty()) return;
+    char narrow[PINBACK_URL_MAX];
+    WideCharToMultiByte(CP_UTF8, 0, url.c_str(), -1, narrow, sizeof narrow, nullptr, nullptr);
+    if (action == L"test") {
+        if (pinback_health_ok(narrow))
+            g_webview->ExecuteScript(
+                L"document.getElementById('status').textContent='Server is reachable.';"
+                L"document.getElementById('status').className='ok';", nullptr);
+        else
+            g_webview->ExecuteScript(
+                L"document.getElementById('status').textContent='Cannot reach server at that URL.';"
+                L"document.getElementById('status').className='err';", nullptr);
+        return;
+    }
+    if (action == L"connect") {
+        pinback_url_save(narrow);
+        if (pinback_health_ok(narrow))
+            LoadCockpit(url.c_str());
+        else
+            g_webview->ExecuteScript(
+                L"document.getElementById('status').textContent='Saved, but server still unreachable.';"
+                L"document.getElementById('status').className='err';", nullptr);
     }
 }
 
@@ -421,6 +498,9 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
         switch (id) {
         case ID_VIEW_BACK:   RunPinback(L"back()"); return 0;
         case ID_VIEW_RELOAD: if (g_webview) g_webview->Reload(); return 0;
+        case ID_VIEW_SERVER:
+            LoadSetupPrefill(g_cockpit_url[0] ? g_cockpit_url : pinback_url_default());
+            return 0;
         case ID_THEME_AUTO:  case ID_THEME_LIGHT: case ID_THEME_DARK:
             g_theme = (id == ID_THEME_AUTO) ? THEME_AUTO
                     : (id == ID_THEME_LIGHT) ? THEME_LIGHT : THEME_DARK;
@@ -466,13 +546,6 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
     ApplyTheme(hWnd);      // Mica + dark caption up front (best-effort on Win10)
     ShowWindow(hWnd, nCmdShow);
 
-    wchar_t urlBuf[2048];
-    if (!HasUrlOverride(urlBuf, ARRAYSIZE(urlBuf))) {
-        WSADATA wsa;
-        WSAStartup(MAKEWORD(2, 2), &wsa);
-        StartServer();
-    }
-
     HRESULT hr = CreateEnvironmentBuiltin(
         Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
             [hWnd](HRESULT, ICoreWebView2Environment* env) -> HRESULT {
@@ -501,7 +574,11 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
                                            ICoreWebView2WebMessageReceivedEventArgs* args) -> HRESULT {
                                         LPWSTR json = nullptr;
                                         if (SUCCEEDED(args->get_WebMessageAsJson(&json)) && json) {
-                                            OnWorkspacesMessage(hWnd, json);
+                                            std::wstring msg(json);
+                                            if (msg.find(L"pinback-setup") != std::wstring::npos)
+                                                OnSetupMessage(msg);
+                                            else if (!g_in_setup)
+                                                OnWorkspacesMessage(hWnd, msg);
                                             CoTaskMemFree(json);
                                         }
                                         return S_OK;
@@ -512,7 +589,7 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
                             RECT bounds;
                             GetClientRect(hWnd, &bounds);
                             g_controller->put_Bounds(bounds);
-                            g_webview->Navigate(StartUrl());
+                            BeginSession();
                             return S_OK;
                         }).Get());
                 return S_OK;

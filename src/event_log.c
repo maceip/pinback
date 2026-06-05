@@ -365,17 +365,26 @@ void pin_event_log_append(pin_event_log *log, const char *kind, const char *json
     log->oldest_seq = log->ring[oldest].seq;
     /* On-disk append. */
     log_writeln_locked(log, event_json, event_len);
-    /* Broadcast. We hold the wrlock during sends, which serializes
-     * appends — fine for our throughput bracket; a future optimization
-     * is to drop to rdlock for the broadcast loop. */
-    pin_subscriber *s = log->subs_head;
-    while (s) {
-        pin_subscriber *next = s->next;
-        if (!s->dead)
-            (void)sub_send_event(s, seq, event_json, event_len);
-        s = next;
+    /* Snapshot subscribers; broadcast without holding wrlock so slow SSE
+     * clients cannot block other producers. event_json stays owned by ring. */
+    size_t sub_n = 0;
+    for (pin_subscriber *s = log->subs_head; s; s = s->next)
+        sub_n++;
+    pin_subscriber **snap = NULL;
+    if (sub_n) {
+        snap = pin_xcalloc(sub_n, sizeof(*snap));
+        size_t i = 0;
+        for (pin_subscriber *s = log->subs_head; s; s = s->next)
+            snap[i++] = s;
     }
     pthread_rwlock_unlock(&log->rw);
+    if (snap) {
+        for (size_t i = 0; i < sub_n; i++) {
+            if (!snap[i]->dead)
+                (void)sub_send_event(snap[i], seq, event_json, event_len);
+        }
+        free(snap);
+    }
 }
 
 void pin_event_log_bump_generation(pin_event_log *log)

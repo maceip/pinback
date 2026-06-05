@@ -69,16 +69,13 @@ static void usage(FILE *fp)
           "  --root DIR         state root (default ~/.pinback)\n"
           "  --ring-cap N       per-workspace ring size (default 4096)\n"
           "  --kvcache-dir DIR  ds4 KV cache dir (default $HOME/.ds4/kvcache)\n"
+          "  --save-timeout-ms N  /save wait on workspace switch (default 15000)\n"
           "  --web-dir DIR      serve UI from disk\n"
           "  --dev              dev mode: read ui/app/ from disk\n"
           "  --quiet            only warnings and errors\n"
-          "  --kv-resume        EXPERIMENTAL: drive ds4-agent's TUI for exact\n"
-          "                     /save+/switch KV resume. The KV mechanism works\n"
-          "                     (sessions are saved/restored), but prose\n"
-          "                     extraction from the TUI redraw stream is still\n"
-          "                     rough. Default off: clean transport + transcript\n"
-          "                     re-prefill, which preserves session state\n"
-          "                     robustly. See docs/architecture/transport-findings.md.\n"
+          "  --no-kv-resume     Disable exact KV session restore (/save+/switch).\n"
+          "                     Uses transcript re-prefill on workspace switch instead.\n"
+          "                     Default: KV resume ON (TUI over pipes + --trace prose).\n"
           "  --help, -h         show this message\n",
           fp);
 }
@@ -206,9 +203,10 @@ int main(int argc, char **argv)
     size_t ring_cap = 4096;
     const char *web_dir = NULL;
     const char *kvcache_dir = NULL;
+    int save_timeout_ms = 0; /* 0 => use default from kv_resume */
     bool dev_mode = false;
     bool quiet = false;
-    bool kv_resume = false;
+    bool kv_resume = true;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -229,14 +227,18 @@ int main(int argc, char **argv)
             ring_cap = (size_t)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a, "--kvcache-dir") && i + 1 < argc)
             kvcache_dir = argv[++i];
+        else if (!strcmp(a, "--save-timeout-ms") && i + 1 < argc)
+            save_timeout_ms = atoi(argv[++i]);
         else if (!strcmp(a, "--web-dir") && i + 1 < argc)
             web_dir = argv[++i];
         else if (!strcmp(a, "--dev"))
             dev_mode = true;
         else if (!strcmp(a, "--quiet"))
             quiet = true;
+        else if (!strcmp(a, "--no-kv-resume"))
+            kv_resume = false;
         else if (!strcmp(a, "--kv-resume"))
-            kv_resume = true;
+            kv_resume = true; /* legacy alias; KV is default */
         else {
             fprintf(stderr, "pinback-server: unknown flag '%s'\n", a);
             usage(stderr);
@@ -274,16 +276,8 @@ int main(int argc, char **argv)
         .model_path = model_path,
         .kvcache_dir = kvcache_dir,
         .spawn_ready_ms = 30000,
-        /* save_timeout_ms = 0 means "skip /save". ds4-agent in
-         * --non-interactive mode treats stdin lines as user prompts,
-         * so /save is not a runtime command there. The architectural
-         * hooks for session resume (workspaces.json.session_sha,
-         * /switch on respawn) remain in place and re-enable cleanly
-         * once the future pty/interactive supervisor lands -- see
-         * docs/backlog/todo-paint.md. Tests against fake-ds4-agent override
-         * this with a non-zero timeout because the fake honors the
-         * dance directly on stdin. */
-        .save_timeout_ms = kv_resume ? 8000 : 0,
+        .save_timeout_ms =
+            save_timeout_ms > 0 ? save_timeout_ms : (kv_resume ? 15000 : 0),
         .term_timeout_ms = 5000,
         .kv_resume = kv_resume,
     };

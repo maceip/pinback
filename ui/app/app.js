@@ -63,6 +63,10 @@ let knownGeneration = -1;
 let es = null;
 let busy = false;
 
+let serverOnline = true;
+let apiFailStreak = 0;
+const API_FAIL_OFFLINE = 2;
+
 // DSML tokens (U+FF5C FULLWIDTH VERTICAL LINE).
 const DSML_OPEN  = '<\uFF5CDSML\uFF5Ctool_calls>';
 const DSML_CLOSE = '</\uFF5CDSML\uFF5Ctool_calls>';
@@ -601,6 +605,58 @@ function setRuntimeBanner(text, level) {
   upDot.className = 'dot' + (level ? ' ' + level : '');
 }
 
+function canOpenServerSettings() {
+  return window.pinbackHost && window.pinbackHost.canOpenServerSetup();
+}
+
+function openServerSettings() {
+  if (window.pinbackHost) window.pinbackHost.openServerSetup();
+}
+
+async function probeServer() {
+  try {
+    const r = await fetch('/healthz', { cache: 'no-store' });
+    return r.ok;
+  } catch (_) {
+    return false;
+  }
+}
+
+function showServerOffline(message) {
+  serverOnline = false;
+  document.body.classList.add('server-offline');
+  const msg = document.getElementById('server-offline-msg');
+  if (msg && message) msg.textContent = message;
+  const settingsBtn = document.getElementById('server-offline-settings');
+  if (settingsBtn) settingsBtn.hidden = !canOpenServerSettings();
+  const hint = document.getElementById('server-offline-hint');
+  if (hint) {
+    hint.hidden = canOpenServerSettings();
+  }
+  disconnect();
+  setRuntimeBanner('unreachable', 'err');
+}
+
+function hideServerOffline() {
+  serverOnline = true;
+  apiFailStreak = 0;
+  document.body.classList.remove('server-offline');
+}
+
+function noteApiSuccess() {
+  apiFailStreak = 0;
+  if (!serverOnline) hideServerOffline();
+}
+
+function noteApiFailure() {
+  apiFailStreak++;
+  if (apiFailStreak >= API_FAIL_OFFLINE) {
+    showServerOffline(
+      'Cannot reach pinback-server. It may be stopped or the address may be wrong.'
+    );
+  }
+}
+
 function showEmptyState() {
   chat.innerHTML = '';
   resetTimeline();
@@ -815,8 +871,14 @@ function connectActive() {
   url.searchParams.set('after', String(lastSeq >= 0 ? lastSeq : 0));
   if (knownGeneration >= 0) url.searchParams.set('generation', String(knownGeneration));
   es = new EventSource(url.toString());
-  es.onopen = () => setRuntimeBanner('connected', 'ok');
-  es.onerror = () => setRuntimeBanner('reconnecting\u2026', 'warn');
+  es.onopen = () => {
+    noteApiSuccess();
+    setRuntimeBanner('connected', 'ok');
+  };
+  es.onerror = () => {
+    setRuntimeBanner('reconnecting\u2026', 'warn');
+    probeServer().then((ok) => { if (!ok) noteApiFailure(); });
+  };
 
   es.addEventListener('event', (ev) => {
     try { applyEvent(JSON.parse(ev.data)); }
@@ -841,7 +903,8 @@ function connectActive() {
 async function refreshWorkspaces() {
   try {
     const r = await fetch('/api/w');
-    if (!r.ok) return;
+    if (!r.ok) { noteApiFailure(); return; }
+    noteApiSuccess();
     const j = await r.json();
     workspaces = Array.isArray(j.workspaces) ? j.workspaces : [];
     const newActive = j.active_id || null;
@@ -865,6 +928,7 @@ async function refreshWorkspaces() {
     }
   } catch (e) {
     console.warn('refreshWorkspaces failed', e);
+    noteApiFailure();
   }
 }
 
@@ -1092,9 +1156,11 @@ wsNewPath.addEventListener('keydown', (e) => {
 });
 
 async function pollRuntime() {
+  if (!serverOnline) return;
   try {
     const r = await fetch('/api/runtime');
-    if (!r.ok) return;
+    if (!r.ok) { noteApiFailure(); return; }
+    noteApiSuccess();
     const j = await r.json();
     if (j.agent && j.agent.state) {
       const st = j.agent.state;
@@ -1109,7 +1175,9 @@ async function pollRuntime() {
     if (j.active_id !== undefined && j.active_id !== activeWorkspaceId) {
       refreshWorkspaces();
     }
-  } catch (_) {}
+  } catch (_) {
+    noteApiFailure();
+  }
 }
 
 /* ---- #5 cross-workspace dashboard ---- */
@@ -1187,10 +1255,43 @@ if (dashBtn) {
   });
 }
 
+const serverOfflineRetry = document.getElementById('server-offline-retry');
+const serverOfflineSettings = document.getElementById('server-offline-settings');
+if (serverOfflineRetry) {
+  serverOfflineRetry.addEventListener('click', async () => {
+    serverOfflineRetry.disabled = true;
+    const ok = await probeServer();
+    serverOfflineRetry.disabled = false;
+    if (!ok) {
+      showServerOffline('Still cannot reach pinback-server. Check that it is running.');
+      return;
+    }
+    hideServerOffline();
+    await refreshWorkspaces();
+    connectActive();
+    pollRuntime();
+  });
+}
+if (serverOfflineSettings) {
+  serverOfflineSettings.addEventListener('click', () => openServerSettings());
+}
+
+async function boot() {
+  showEmptyState();
+  const ok = await probeServer();
+  if (!ok) {
+    showServerOffline(
+      'No pinback-server at this address. Start the server or check the connection.'
+    );
+    return;
+  }
+  await refreshWorkspaces();
+  connectActive();
+  pollRuntime();
+}
+
 ensureShiki();
-showEmptyState();
-refreshWorkspaces().then(() => connectActive());
-pollRuntime();
+boot();
 setInterval(pollRuntime, 5000);
 
 /* ---------------------------------------------------------------------------
@@ -1210,17 +1311,7 @@ setInterval(pollRuntime, 5000);
    uniform contract every shell consumes.
 --------------------------------------------------------------------------- */
 (function () {
-  function nativeSink() {
-    const w = window;
-    const apple = w.webkit && w.webkit.messageHandlers && w.webkit.messageHandlers.pinback;
-    if (apple) return (m) => apple.postMessage(m);                 // WKWebView / WebKitGTK
-    if (w.PinbackHost && typeof w.PinbackHost.post === 'function') // Android @JavascriptInterface
-      return (m) => w.PinbackHost.post(JSON.stringify(m));
-    const wv2 = w.chrome && w.chrome.webview;                      // Windows WebView2
-    if (wv2 && typeof wv2.postMessage === 'function') return (m) => wv2.postMessage(m);
-    return null;
-  }
-  const sink = nativeSink();
+  const sink = window.pinbackHost && window.pinbackHost.cockpitSink();
 
   // MRU back-stack of previously-active workspace ids (most-recent last).
   let lastActive = null;

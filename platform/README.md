@@ -9,8 +9,9 @@ The directory is named `platform/` after the convention used by respected C/C++
 codebases for OS-specific code — e.g. Godot (`platform/{macos,ios,android,
 linuxbsd,windows,web}`) and WebKit (`Source/WebCore/platform`). Each subdirectory
 is a self-contained project with its own build system; nothing here is shared at
-the code level except URL/config helpers in [`common/`](./common/), so each shell
-stays "maximally small".
+the code level except shared host assets in [`common/`](./common/) and the
+[`CONTRACT.md`](./CONTRACT.md) webview protocol — each shell stays "maximally
+small".
 
 ## Design rules
 

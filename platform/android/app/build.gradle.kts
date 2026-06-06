@@ -16,11 +16,10 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
-        // Android cannot host pinback-server (no ds4-agent / 87GB model on the
-        // phone): the app is a thin client onto a REMOTE pinback. The emulator
-        // reaches a pinback-server on the host machine's loopback via 10.0.2.2;
-        // for a physical device override PINBACK_URL with your LAN/Tailscale host.
-        buildConfigField("String", "PINBACK_URL", "\"http://10.0.2.2:8088\"")
+        // Thin client onto a remote pinback-server. Default URL is resolved at
+        // runtime (emulator → 10.0.2.2:8088; physical device → setup screen).
+        // Override with PINBACK_URL env or a non-empty buildConfigField for CI.
+        buildConfigField("String", "PINBACK_URL", "\"\"")
     }
 
     buildFeatures {
@@ -49,6 +48,15 @@ kotlin {
         jvmTarget.set(JvmTarget.JVM_17)
     }
 }
+
+// Single source: platform/common/ (see platform/CONTRACT.md).
+tasks.register<Copy>("syncHostAssets") {
+    from("../../common") {
+        include("setup.html", "pinback-host.js")
+    }
+    into(layout.projectDirectory.dir("src/main/assets"))
+}
+tasks.named("preBuild") { dependsOn("syncHostAssets") }
 
 dependencies {
     implementation(libs.androidx.activity)

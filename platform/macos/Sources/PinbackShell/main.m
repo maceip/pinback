@@ -487,6 +487,13 @@ static NSString *const kServerItem = @"pinback.server";
     if (![message.body isKindOfClass:[NSDictionary class]]) return;
     NSDictionary *body = message.body;
 
+    if ([message.name isEqualToString:@"pinback"] &&
+        [body[@"type"] isEqualToString:@"pinback-host"] &&
+        [body[@"action"] isEqualToString:@"openSetup"]) {
+        [self.shell openServerSettings:nil];
+        return;
+    }
+
     if ([message.name isEqualToString:@"pinbackSetup"] ||
         [body[@"type"] isEqualToString:@"pinback-setup"]) {
         NSString *action = body[@"action"];

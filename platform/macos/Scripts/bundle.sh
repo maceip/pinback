@@ -26,6 +26,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/PinbackShell"
 cp "Resources/AppIcon.icns" "$APP/Contents/Resources/AppIcon.icns"
 cp "../common/setup.html" "$APP/Contents/Resources/setup.html"
+cp "../common/pinback-host.js" "$APP/Contents/Resources/pinback-host.js"
 strip -x "$APP/Contents/MacOS/PinbackShell"   # drop local symbols
 if [ -n "$SERVER" ] && [ -x "$SERVER" ]; then
     cp "$SERVER" "$APP/Contents/MacOS/pinback-server"

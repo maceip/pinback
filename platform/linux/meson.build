@@ -30,6 +30,8 @@ install_data('dev.pinback.shell.desktop',
   install_dir : get_option('datadir') / 'applications')
 install_data('../common/setup.html',
   install_dir : get_option('bindir'))
+install_data('../common/pinback-host.js',
+  install_dir : get_option('bindir'))
 foreach sz : ['16', '32', '48', '64', '128', '256', '512']
   install_data('icons' / 'hicolor' / (sz + 'x' + sz) / 'apps' / 'dev.pinback.shell.png',
     install_dir : get_option('datadir') / 'icons' / 'hicolor' / (sz + 'x' + sz) / 'apps')

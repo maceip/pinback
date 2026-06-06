@@ -575,7 +575,10 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow) {
                                         LPWSTR json = nullptr;
                                         if (SUCCEEDED(args->get_WebMessageAsJson(&json)) && json) {
                                             std::wstring msg(json);
-                                            if (msg.find(L"pinback-setup") != std::wstring::npos)
+                                            if (msg.find(L"\"type\":\"pinback-host\"") != std::wstring::npos &&
+                                                msg.find(L"openSetup") != std::wstring::npos)
+                                                LoadSetupPrefill(g_cockpit_url[0] ? g_cockpit_url : pinback_url_default());
+                                            else if (msg.find(L"pinback-setup") != std::wstring::npos)
                                                 OnSetupMessage(msg);
                                             else if (!g_in_setup)
                                                 OnWorkspacesMessage(hWnd, msg);

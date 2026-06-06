@@ -28,7 +28,7 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		PB0000000000000000000005 /* Pinback */ = {isa = PBXNativeTarget; buildConfigurationList = PB000000000000000000000B /* Build configuration list for PBXNativeTarget "Pinback" */; buildPhases = (PB0000000000000000000007 /* Sources */, PB0000000000000000000008 /* Frameworks */, PB0000000000000000000009 /* Resources */); buildRules = (); dependencies = (); fileSystemSynchronizedGroups = (PB0000000000000000000004 /* Pinback */); name = Pinback; packageProductDependencies = (); productName = Pinback; productReference = PB0000000000000000000006 /* Pinback.app */; productType = "com.apple.product-type.application"; };
+		PB0000000000000000000005 /* Pinback */ = {isa = PBXNativeTarget; buildConfigurationList = PB000000000000000000000B /* Build configuration list for PBXNativeTarget "Pinback" */; buildPhases = (PB0000000000000000000011 /* Sync host assets */, PB0000000000000000000007 /* Sources */, PB0000000000000000000008 /* Frameworks */, PB0000000000000000000009 /* Resources */); buildRules = (); dependencies = (); fileSystemSynchronizedGroups = (PB0000000000000000000004 /* Pinback */); name = Pinback; packageProductDependencies = (); productName = Pinback; productReference = PB0000000000000000000006 /* Pinback.app */; productType = "com.apple.product-type.application"; };
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -63,6 +63,28 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		PB0000000000000000000011 /* Sync host assets */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/../common/setup.html",
+				"$(SRCROOT)/../common/pinback-host.js",
+			);
+			name = "Sync host assets";
+			outputPaths = (
+				"$(SRCROOT)/Pinback/HostAssets/setup.html",
+				"$(SRCROOT)/Pinback/HostAssets/pinback-host.js",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "mkdir -p \"${SRCROOT}/Pinback/HostAssets\"\ncp \"${SRCROOT}/../common/setup.html\" \"${SRCROOT}/../common/pinback-host.js\" \"${SRCROOT}/Pinback/HostAssets/\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXResourcesBuildPhase section */
 		PB0000000000000000000009 /* Resources */ = {isa = PBXResourcesBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };

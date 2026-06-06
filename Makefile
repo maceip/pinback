@@ -88,8 +88,15 @@ pinback-server: $(MAIN_BIN)
 fake-ds4-agent: $(FAKE_BIN)
 fake-kv-ds4-agent: $(FAKE_KV_BIN)
 
+# Shared shell bridge → cockpit embed tree (see platform/CONTRACT.md).
+UI_HOST_JS := $(UI_DIR)/pinback-host.js
+COMMON_HOST_JS := platform/common/pinback-host.js
+
+$(UI_HOST_JS): $(COMMON_HOST_JS)
+	cp $< $@
+
 # Regenerate embedded UI from ui/app/. Output lives under build/generated/.
-embed:
+embed: $(UI_HOST_JS)
 	@mkdir -p $(GEN_DIR)
 	bash $(EMBED_SH) > $(GEN_STATIC)
 

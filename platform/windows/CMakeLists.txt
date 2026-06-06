@@ -16,6 +16,13 @@ FetchContent_Declare(webview2
 FetchContent_MakeAvailable(webview2)
 
 add_executable(pinback-shell WIN32 main.cpp ../common/pinback_url.c app.manifest app.rc)
+add_custom_command(TARGET pinback-shell POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "${CMAKE_CURRENT_SOURCE_DIR}/../common/setup.html"
+        "$<TARGET_FILE_DIR:pinback-shell>"
+    COMMAND ${CMAKE_COMMAND} -E copy
+        "${CMAKE_CURRENT_SOURCE_DIR}/../common/pinback-host.js"
+        "$<TARGET_FILE_DIR:pinback-shell>")
 target_include_directories(pinback-shell PRIVATE
     "${webview2_SOURCE_DIR}/build/native/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/../common")

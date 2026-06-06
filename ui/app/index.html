@@ -381,9 +381,48 @@ table.tc-diff td.add{background:rgba(60,170,90,.16)}
 .tl-text{font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
   display:block}
 body.rail-open #chat, body.rail-open #composer{padding-left:252px}
+
+/* Server unreachable recovery (mobile shells + any dead pinback-server) */
+body.server-offline header,
+body.server-offline #timeline,
+body.server-offline #chat,
+body.server-offline #composer{visibility:hidden}
+#server-offline{
+  position:fixed; inset:0; z-index:100;
+  display:none; align-items:center; justify-content:center;
+  padding:24px; background:var(--bg);
+}
+body.server-offline #server-offline{display:flex}
+#server-offline .card{
+  width:min(440px,100%); padding:28px 26px;
+  background:var(--bg-elev); border:1px solid var(--line);
+  border-radius:14px; box-shadow:0 12px 40px rgba(0,0,0,.35);
+}
+#server-offline h2{margin:0 0 8px; font-size:22px; font-weight:600; color:var(--accent)}
+#server-offline p{margin:0 0 18px; color:var(--fg-mute); font-size:14px; line-height:1.5}
+#server-offline .actions{display:flex; gap:10px; flex-wrap:wrap}
+#server-offline button{
+  flex:1 1 auto; min-width:120px; padding:10px 14px; border-radius:8px;
+  font:inherit; font-weight:600; cursor:pointer;
+}
+#server-offline-retry{background:var(--accent); color:#0d0f14; border:none}
+#server-offline-settings{background:transparent; color:var(--fg); border:1px solid var(--line)}
+#server-offline-settings[hidden]{display:none}
+#server-offline .hint{margin-top:16px; font-size:12px; color:var(--fg-dim)}
 </style>
 </head>
 <body>
+<div id="server-offline" aria-live="polite">
+  <div class="card">
+    <h2>pinback</h2>
+    <p id="server-offline-msg">Cannot reach pinback-server. It may be stopped or the address may be wrong.</p>
+    <div class="actions">
+      <button type="button" id="server-offline-retry">Retry</button>
+      <button type="button" id="server-offline-settings" hidden>Server settings</button>
+    </div>
+    <p class="hint" id="server-offline-hint">On desktop, start <code>pinback-server</code> on this machine. On a phone, open server settings and enter your Mac or PC LAN or Tailscale URL.</p>
+  </div>
+</div>
 <header>
   <span class="brand">pinback</span>
   <div id="ws-picker">
@@ -447,6 +486,7 @@ body.rail-open #chat, body.rail-open #composer{padding-left:252px}
   </div>
 </div>
 
+<script src="/pinback-host.js" defer></script>
 <script src="/app.js" defer></script>
 </body>
 </html>

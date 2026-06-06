@@ -16,7 +16,8 @@ needs no project edit.
 ios/
 ├── Pinback.xcodeproj/            # tiny pbxproj (synchronized group, objectVersion 77)
 └── Pinback/
-    ├── PinbackApp.swift          # the entire app
+    ├── PinbackApp.swift          # shell: WKWebView host + workspace sidebar
+    ├── HostAssets/               # copied from platform/common/ at build time
     └── Info.plist                # ATS: NSAllowsLocalNetworking for the http dev server
 ```
 
@@ -53,9 +54,9 @@ twice (which causes a duplicate-Info.plist build error when
 iOS can't host `pinback-server` (no `ds4-agent` / 87 GB model on-device), so the
 app is a thin client onto a remote pinback. The iOS Simulator shares the Mac's
 network stack, so the default `http://127.0.0.1:8088` reaches a `pinback-server`
-running on your Mac (`make make pinback-server && ./pinback-servermake pinback-server && ./pinback-server ./build/pinback-server`). On a physical
-device, set `PINBACK_URL` in the scheme's Run → Arguments → Environment to your
-Mac's LAN / Tailscale address (and that host's ATS rules apply).
+running on your Mac (`make pinback-server && ./build/pinback-server`). On a
+physical device, use the bundled **Connect** screen (same `setup.html` as every
+shell) or set `PINBACK_URL` in the scheme's Run → Arguments → Environment.
 
 ## Notes
 

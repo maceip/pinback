@@ -32,8 +32,18 @@ private struct RootView: View {
     @AppStorage("pinbackServerURL") private var serverURL = ""
     @State private var phase: SessionPhase = .checking
 
+    private var envURL: String? {
+        let v = ProcessInfo.processInfo.environment["PINBACK_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (v?.isEmpty == false) ? v : nil
+    }
+
     private var defaultURL: String {
-        ProcessInfo.processInfo.environment["PINBACK_URL"] ?? "http://127.0.0.1:8088"
+        if let e = envURL { return e }
+        #if targetEnvironment(simulator)
+        return "http://127.0.0.1:8088"
+        #else
+        return ""
+        #endif
     }
 
     var body: some View {
@@ -43,28 +53,23 @@ private struct RootView: View {
                 ProgressView("Connecting…")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .setup:
-                ConnectView(
-                    initialURL: serverURL.isEmpty ? defaultURL : serverURL,
-                    onConnect: { url in
-                        serverURL = url.absoluteString
-                        phase = .cockpit(url)
-                    }
-                )
+                SetupWebView(
+                    prefill: serverURL.isEmpty ? defaultURL : serverURL
+                ) { url in
+                    serverURL = url.absoluteString
+                    phase = .cockpit(url)
+                }
             case .cockpit(let url):
-                ShellView(baseURL: url, onOpenSettings: {
-                    phase = .setup
-                })
+                ShellView(baseURL: url, onOpenSettings: { phase = .setup })
             }
         }
-        .task {
-            await boot()
-        }
+        .task { await boot() }
     }
 
     @MainActor
     private func boot() async {
-        let candidate = serverURL.isEmpty ? defaultURL : serverURL
-        guard let url = URL(string: candidate) else {
+        let candidate = envURL ?? (serverURL.isEmpty ? defaultURL : serverURL)
+        guard !candidate.isEmpty, let url = URL(string: normalizeURL(candidate)) else {
             phase = .setup
             return
         }
@@ -77,90 +82,89 @@ private struct RootView: View {
     }
 }
 
-private struct ConnectView: View {
-    @State private var urlText: String
-    @State private var status = "Enter the pinback-server URL on your Mac or PC."
-    @State private var statusOK = false
+// Bundled platform/common/setup.html + pinback-host.js (see platform/CONTRACT.md).
+private struct SetupWebView: UIViewRepresentable {
+    let prefill: String
     let onConnect: (URL) -> Void
 
-    init(initialURL: String, onConnect: @escaping (URL) -> Void) {
-        _urlText = State(initialValue: initialURL)
-        self.onConnect = onConnect
+    func makeCoordinator() -> Coordinator {
+        Coordinator(prefill: prefill, onConnect: onConnect)
     }
 
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    TextField("Server URL", text: $urlText)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                } header: {
-                    Text("Pinback server")
-                } footer: {
-                    Text("Simulator: use http://127.0.0.1:8088 with pinback-server on your Mac. Physical device: use your Mac’s LAN or Tailscale address.")
-                }
-                Section {
-                    Button("Test connection") {
-                        Task { await test() }
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.userContentController.add(context.coordinator, name: "pinbackSetup")
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = context.coordinator
+        context.coordinator.webView = webView
+        if let url = Bundle.main.url(forResource: "setup", withExtension: "html", subdirectory: "HostAssets") {
+            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
+        }
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {}
+
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        let prefill: String
+        let onConnect: (URL) -> Void
+        weak var webView: WKWebView?
+
+        init(prefill: String, onConnect: @escaping (URL) -> Void) {
+            self.prefill = prefill
+            self.onConnect = onConnect
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard !prefill.isEmpty else { return }
+            let esc = prefill
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "'", with: "\\'")
+            webView.evaluateJavaScript(
+                "document.getElementById('url').value='\(esc)';"
+            ) { _, _ in }
+        }
+
+        func userContentController(
+            _ userContentController: WKUserContentController,
+            didReceive message: WKScriptMessage
+        ) {
+            guard message.name == "pinbackSetup" else { return }
+            let body: [String: Any]
+            if let dict = message.body as? [String: Any] {
+                body = dict
+            } else if let json = message.body as? String,
+                      let data = json.data(using: .utf8),
+                      let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                body = dict
+            } else {
+                return
+            }
+            guard body["type"] as? String == "pinback-setup" else { return }
+            let action = body["action"] as? String ?? ""
+            guard let raw = body["url"] as? String,
+                  let url = URL(string: normalizeURL(raw)) else { return }
+
+            Task { @MainActor in
+                let ok = await healthOK(url)
+                switch action {
+                case "test":
+                    let js = ok
+                        ? "document.getElementById('status').textContent='Server is reachable.';document.getElementById('status').className='ok';"
+                        : "document.getElementById('status').textContent='Cannot reach server at that URL.';document.getElementById('status').className='err';"
+                    webView?.evaluateJavaScript(js) { _, _ in }
+                case "connect":
+                    if ok {
+                        onConnect(url)
+                    } else {
+                        webView?.evaluateJavaScript(
+                            "document.getElementById('status').textContent='Saved, but server still unreachable.';document.getElementById('status').className='err';"
+                        ) { _, _ in }
                     }
-                    Button("Connect") {
-                        Task { await connect() }
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-                if !status.isEmpty {
-                    Section {
-                        Text(status)
-                            .foregroundStyle(statusOK ? .green : .secondary)
-                    }
+                default:
+                    break
                 }
             }
-            .navigationTitle("Connect")
-        }
-    }
-
-    private func normalized() -> URL? {
-        var s = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if s.isEmpty { return nil }
-        if !s.lowercased().hasPrefix("http://") && !s.lowercased().hasPrefix("https://") {
-            s = "http://" + s
-        }
-        while s.hasSuffix("/") { s.removeLast() }
-        return URL(string: s)
-    }
-
-    @MainActor
-    private func test() async {
-        guard let url = normalized() else {
-            status = "Enter a valid URL."
-            statusOK = false
-            return
-        }
-        status = "Testing…"
-        statusOK = false
-        if await healthOK(url) {
-            status = "Server is reachable."
-            statusOK = true
-        } else {
-            status = "Cannot reach server at that URL."
-            statusOK = false
-        }
-    }
-
-    @MainActor
-    private func connect() async {
-        guard let url = normalized() else {
-            status = "Enter a valid URL."
-            statusOK = false
-            return
-        }
-        if await healthOK(url) {
-            onConnect(url)
-        } else {
-            status = "Server still unreachable. Check the address and that pinback-server is running."
-            statusOK = false
         }
     }
 }
@@ -169,12 +173,12 @@ private struct ShellView: View {
     let baseURL: URL
     let onOpenSettings: () -> Void
 
-    @State private var page = WebPage()
     @State private var workspaces: [Workspace] = []
     @State private var activeId: String?
     @State private var selectedId: String?
     @State private var showInspector = false
     @State private var columnVisibility: NavigationSplitViewVisibility = .automatic
+    @State private var webViewRef: WKWebView?
 
     private var active: Workspace? {
         workspaces.first { $0.id == activeId }
@@ -196,41 +200,37 @@ private struct ShellView: View {
             }
             .navigationTitle("Workspaces")
         } detail: {
-            WebView(page)
-                .ignoresSafeArea()
-                .backgroundExtensionEffect()
-                .navigationTitle(active.map { $0.label.isEmpty ? $0.id : $0.label } ?? "Pinback")
-                .toolbar {
-                    ToolbarItem {
-                        Button("Reload", systemImage: "arrow.clockwise") {
-                            page.load(URLRequest(url: page.url ?? baseURL))
-                        }
-                    }
-                    ToolbarSpacer(.flexible)
-                    ToolbarItem {
-                        Button("Server", systemImage: "network") {
-                            onOpenSettings()
-                        }
-                    }
-                    ToolbarItem {
-                        if let shareURL = page.url {
-                            ShareLink(item: shareURL)
-                        }
-                    }
-                    ToolbarSpacer(.fixed)
-                    ToolbarItem {
-                        Button("Info", systemImage: "info.circle") {
-                            showInspector.toggle()
-                        }
+            CockpitWebView(
+                baseURL: baseURL,
+                onOpenSettings: onOpenSettings,
+                webViewRef: $webViewRef
+            )
+            .ignoresSafeArea()
+            .navigationTitle(active.map { $0.label.isEmpty ? $0.id : $0.label } ?? "Pinback")
+            .toolbar {
+                ToolbarItem {
+                    Button("Reload", systemImage: "arrow.clockwise") {
+                        webViewRef?.load(URLRequest(url: baseURL))
                     }
                 }
-                .inspector(isPresented: $showInspector) {
-                    InspectorView(active: active, count: workspaces.count)
-                        .inspectorColumnWidth(min: 220, ideal: 280, max: 360)
+                ToolbarSpacer(.flexible)
+                ToolbarItem {
+                    Button("Server", systemImage: "network") { onOpenSettings() }
                 }
+                ToolbarItem {
+                    ShareLink(item: baseURL)
+                }
+                ToolbarSpacer(.fixed)
+                ToolbarItem {
+                    Button("Info", systemImage: "info.circle") { showInspector.toggle() }
+                }
+            }
+            .inspector(isPresented: $showInspector) {
+                InspectorView(active: active, count: workspaces.count)
+                    .inspectorColumnWidth(min: 220, ideal: 280, max: 360)
+            }
         }
         .task {
-            page.load(URLRequest(url: baseURL))
             while !Task.isCancelled {
                 await pollState()
                 try? await Task.sleep(for: .seconds(1.5))
@@ -238,23 +238,18 @@ private struct ShellView: View {
         }
         .onChange(of: selectedId) { _, newValue in
             guard let id = newValue, id != activeId else { return }
-            Task {
-                _ = try? await page.callJavaScript(
-                    "window.pinback && window.pinback.selectWorkspace(wid); return true;",
-                    arguments: ["wid": id])
-            }
+            webViewRef?.evaluateJavaScript(
+                "window.pinback && window.pinback.selectWorkspace('\(jsEscape(id))');"
+            )
         }
     }
 
     @MainActor
     private func pollState() async {
-        let result: Any?
-        do {
-            result = try await page.callJavaScript(
-                "return JSON.stringify(window.pinback ? window.pinback.state() : null);")
-        } catch {
-            return
-        }
+        guard let webViewRef else { return }
+        let result = try? await webViewRef.evaluateJavaScript(
+            "JSON.stringify(window.pinback ? window.pinback.state() : null)"
+        )
         guard
             let json = result as? String, json != "null",
             let data = json.data(using: .utf8),
@@ -264,6 +259,48 @@ private struct ShellView: View {
         workspaces = state.workspaces
         activeId = state.activeId
         if selectedId != state.activeId { selectedId = state.activeId }
+    }
+}
+
+private struct CockpitWebView: UIViewRepresentable {
+    let baseURL: URL
+    let onOpenSettings: () -> Void
+    @Binding var webViewRef: WKWebView?
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onOpenSettings: onOpenSettings)
+    }
+
+    func makeUIView(context: Context) -> WKWebView {
+        let config = WKWebViewConfiguration()
+        config.userContentController.add(context.coordinator, name: "pinback")
+        let webView = WKWebView(frame: .zero, configuration: config)
+        context.coordinator.webView = webView
+        webView.load(URLRequest(url: baseURL))
+        DispatchQueue.main.async { webViewRef = webView }
+        return webView
+    }
+
+    func updateUIView(_ webView: WKWebView, context: Context) {}
+
+    final class Coordinator: NSObject, WKScriptMessageHandler {
+        let onOpenSettings: () -> Void
+        weak var webView: WKWebView?
+
+        init(onOpenSettings: @escaping () -> Void) {
+            self.onOpenSettings = onOpenSettings
+        }
+
+        func userContentController(
+            _ userContentController: WKUserContentController,
+            didReceive message: WKScriptMessage
+        ) {
+            guard message.name == "pinback",
+                  let body = message.body as? [String: Any],
+                  body["type"] as? String == "pinback-host",
+                  body["action"] as? String == "openSetup" else { return }
+            DispatchQueue.main.async { self.onOpenSettings() }
+        }
     }
 }
 
@@ -286,6 +323,22 @@ private struct InspectorView: View {
             }
         }
     }
+}
+
+private func normalizeURL(_ raw: String) -> String {
+    var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    if s.isEmpty { return s }
+    let lower = s.lowercased()
+    if !lower.hasPrefix("http://") && !lower.hasPrefix("https://") {
+        s = "http://" + s
+    }
+    while s.hasSuffix("/") { s.removeLast() }
+    return s
+}
+
+private func jsEscape(_ s: String) -> String {
+    s.replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "'", with: "\\'")
 }
 
 private func healthOK(_ base: URL) async -> Bool {

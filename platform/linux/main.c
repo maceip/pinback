@@ -214,6 +214,14 @@ static void on_script_message(WebKitUserContentManager *ucm, JSCValue *value, gp
     if (!value || !jsc_value_is_object(value)) return;
 
     char *type = jsc_str_prop(value, "type");
+    if (type && strcmp(type, "pinback-host") == 0) {
+        char *action = jsc_str_prop(value, "action");
+        if (action && strcmp(action, "openSetup") == 0)
+            load_setup_prefill(g_cockpit_url[0] ? g_cockpit_url : NULL);
+        g_free(action);
+        g_free(type);
+        return;
+    }
     if (type && strcmp(type, "pinback-setup") == 0) {
         on_setup_message(value);
         g_free(type);

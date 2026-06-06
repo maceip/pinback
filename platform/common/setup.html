@@ -33,6 +33,7 @@ button:disabled { opacity:.5; cursor:not-allowed; }
 .hint { margin-top:16px; font-size:12px; color:var(--muted); }
 .hint code { font-size:11px; }
 </style>
+<script src="pinback-host.js"></script>
 </head>
 <body>
 <div class="card">
@@ -49,52 +50,12 @@ button:disabled { opacity:.5; cursor:not-allowed; }
   <p class="hint">Desktop shells can bundle <code>pinback-server</code> next to the app. Mobile devices need your Mac/PC LAN or Tailscale address. Override with <code>PINBACK_URL</code> for development.</p>
 </div>
 <script>
-(function () {
-  const urlEl = document.getElementById('url');
-  const statusEl = document.getElementById('status');
-  const testBtn = document.getElementById('test');
-  const connectBtn = document.getElementById('connect');
-
-  function host() {
-    if (window.PinbackHost && typeof window.PinbackHost.getSavedUrl === 'function')
-      return window.PinbackHost;
-    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.pinbackSetup)
-      return { post: (m) => window.webkit.messageHandlers.pinbackSetup.postMessage(m) };
-    if (window.chrome && window.chrome.webview)
-      return { post: (m) => window.chrome.webview.postMessage(m) };
-    return null;
-  }
-
-  function setStatus(text, cls) {
-    statusEl.textContent = text;
-    statusEl.className = cls || 'warn';
-  }
-
-  function normalize(u) {
-    u = (u || '').trim();
-    if (!u) return '';
-    if (!/^https?:\/\//i.test(u)) u = 'http://' + u;
-    return u.replace(/\/+$/, '');
-  }
-
-  function send(action) {
-    const url = normalize(urlEl.value);
-    if (!url) { setStatus('Enter a server URL.', 'err'); return; }
-    const h = host();
-    if (!h) { setStatus('Native bridge unavailable.', 'err'); return; }
-    setStatus(action === 'test' ? 'Testing…' : 'Connecting…', 'warn');
-    const msg = { type: 'pinback-setup', action, url };
-    if (h.postMessage) h.postMessage(msg);
-    else if (typeof h.post === 'function') h.post(JSON.stringify(msg));
-  }
-
-  testBtn.addEventListener('click', () => send('test'));
-  connectBtn.addEventListener('click', () => send('connect'));
-
-  const saved = (host() && typeof host().getSavedUrl === 'function') ? host().getSavedUrl() : '';
-  urlEl.value = saved || 'http://127.0.0.1:8088';
-  setStatus('Enter the server address and tap Test or Connect.', 'warn');
-})();
+pinbackHost.initSetupPanel({
+  urlEl: document.getElementById('url'),
+  statusEl: document.getElementById('status'),
+  testBtn: document.getElementById('test'),
+  connectBtn: document.getElementById('connect'),
+});
 </script>
 </body>
 </html>

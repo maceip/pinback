@@ -1,3 +1,8 @@
+/* getaddrinfo(3) needs POSIX feature macros on Linux/glibc before netdb.h. */
+#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE) && !defined(_GNU_SOURCE)
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "pinback_url.h"
 
 #include <ctype.h>

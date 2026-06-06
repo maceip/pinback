@@ -125,6 +125,8 @@ static void LoadSetupPrefill(const char* prefill) {
     }
 }
 
+static void StartServer();
+
 static void BeginSession() {
     wchar_t envUrl[2048];
     if (HasUrlOverride(envUrl, ARRAYSIZE(envUrl))) {

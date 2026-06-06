@@ -276,8 +276,7 @@ int main(int argc, char **argv)
         .model_path = model_path,
         .kvcache_dir = kvcache_dir,
         .spawn_ready_ms = 30000,
-        .save_timeout_ms =
-            save_timeout_ms > 0 ? save_timeout_ms : (kv_resume ? 15000 : 0),
+        .save_timeout_ms = save_timeout_ms > 0 ? save_timeout_ms : (kv_resume ? 15000 : 0),
         .term_timeout_ms = 5000,
         .kv_resume = kv_resume,
     };

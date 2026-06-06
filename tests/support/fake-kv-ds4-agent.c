@@ -109,7 +109,7 @@ static void handle_prompt(const char *line)
 {
     (void)line;
     emit_status_busy();
-  printf("echo: %s\r\n\r\n", line);
+    printf("echo: %s\r\n\r\n", line);
     trace_turn(line, "echo-ok");
     emit_status_idle();
     fflush(stdout);

@@ -404,8 +404,8 @@ static void emit_turn_end(pin_agent *a)
     emit_event(a, "answer_end", "{}", 2);
 }
 
-static bool agent_snapshot_git_dir_for(pin_workspace_store *ws, const char *ws_id,
-                                       char *buf, size_t cap)
+static bool agent_snapshot_git_dir_for(pin_workspace_store *ws, const char *ws_id, char *buf,
+                                       size_t cap)
 {
     if (!ws_id || !ws_id[0])
         return false;
@@ -1494,8 +1494,8 @@ bool pin_agent_activate(pin_agent *a, const char *workspace_id, char **out_err)
         long switch_ms = a->cfg.save_timeout_ms > 0 ? a->cfg.save_timeout_ms : 15000;
         long long switch_deadline = (long long)pin_monotonic_ms() + switch_ms;
         if (!kv_wait_switch_locked(a, switch_deadline)) {
-            PIN_LOG_WARNF("kv.switch_timeout", "workspace=%s sha=%s ms=%ld", meta.id,
-                          sha_arg, switch_ms);
+            PIN_LOG_WARNF("kv.switch_timeout", "workspace=%s sha=%s ms=%ld", meta.id, sha_arg,
+                          switch_ms);
         }
         if (a->switch_restored) {
             free(a->pending_resume);
@@ -1555,8 +1555,7 @@ bool pin_agent_submit(pin_agent *a, const char *workspace_id, const char *user_t
     /* Snapshot the workspace so we can diff what this turn changes. */
     {
         char gd[1100];
-        if (a->active_path[0] &&
-            agent_snapshot_git_dir_for(a->ws, a->active_id, gd, sizeof(gd)))
+        if (a->active_path[0] && agent_snapshot_git_dir_for(a->ws, a->active_id, gd, sizeof(gd)))
             pin_snapshot_begin(gd, a->active_path);
     }
     char *pending = a->pending_resume;
